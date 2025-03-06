@@ -1,0 +1,31 @@
+{
+  "name": "imm",
+  "version": "1.0.0",
+  "main": "index.js",
+  "scripts": {
+    "test": "echo \"Error: no test specified\" && exit 1",
+    "start": "ts-node src/index.ts",
+    "plan:generate": "ts-node src/scripts/generate.ts",
+    "plan:check": "ts-node src/scripts/check.ts"
+  },
+  "author": "",
+  "license": "ISC",
+  "keywords": [],
+  "description": "",
+  "dependencies": {
+    "@binance/connector": "^3.6.1",
+    "@binance/connector-typescript": "^0.3.15",
+    "@tensorflow/tfjs-node": "^4.22.0",
+    "@types/axios": "^0.14.4",
+    "@types/node": "^22.13.4",
+    "@types/sqlite3": "^5.1.0",
+    "axios": "^1.7.9",
+    "binance-api-node": "^0.12.9",
+    "dotenv": "^16.4.7",
+    "openai": "^4.85.4",
+    "sqlite3": "^5.1.7",
+    "technicalindicators": "^3.1.0",
+    "ts-node": "^10.9.2",
+    "typescript": "^5.7.3"
+  }
+}

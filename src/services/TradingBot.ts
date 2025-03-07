@@ -79,6 +79,7 @@ export class TradingBot {
     try {
       // Get the latest plan
       const latestPlan = await this.dbService.getLatestTradingPlan(symbol, interval);
+      console.log('Latest Trading Plan:', JSON.stringify(latestPlan, null, 2));
       
       if (!latestPlan) {
         console.log('No existing trading plan found for', symbol);

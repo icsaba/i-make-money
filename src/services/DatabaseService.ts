@@ -147,12 +147,12 @@ export class DatabaseService {
     const sql = `
       UPDATE trading_plans 
       SET progress = ?,
-          ${progress === TradingProgress.TRADED ? 'executed_at = CURRENT_TIMESTAMP' : ''}
+          executed_at = CASE WHEN ? = '${TradingProgress.TRADED}' THEN CURRENT_TIMESTAMP ELSE executed_at END
       WHERE id = ?
     `;
     
     return new Promise<void>((resolve, reject) => {
-      this.db.run(sql, [progress, id], (err) => {
+      this.db.run(sql, [progress, progress, id], (err) => {
         if (err) {
           reject(err);
         } else {

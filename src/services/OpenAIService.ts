@@ -1,5 +1,5 @@
 import OpenAI from 'openai';
-import { TradingData, TradingPlan } from '../types/trading';
+import { TradingData, TradingPlan, TradingPlanValidation } from '../types/trading';
 import { PromptFactory } from './PromptFactory';
 
 export class OpenAIService {
@@ -43,7 +43,7 @@ export class OpenAIService {
     }
   }
 
-  async validateTradingConditions(plan: TradingPlan, currentData: TradingData): Promise<boolean> {
+  async validateTradingConditions(plan: TradingPlan, currentData: TradingData): Promise<TradingPlanValidation> {
     try {
       const prompt = PromptFactory.createValidationPrompt(plan, currentData);
 
@@ -58,7 +58,6 @@ export class OpenAIService {
       });
 
       const content = response.choices[0].message.content;
-      console.log('Validation Response:', content);
       
       // Extract JSON from the response
       const jsonMatch = content?.match(/\{[\s\S]*\}/);
@@ -67,7 +66,7 @@ export class OpenAIService {
       }
 
       const validation = JSON.parse(jsonMatch[0]);
-      return validation.isValid;
+      return validation;
 
     } catch (error) {
       console.error('Error validating trading conditions:', error);

@@ -79,7 +79,6 @@ export class TradingBot {
     try {
       // Get the latest plan
       const latestPlan = await this.dbService.getLatestTradingPlan(symbol, interval);
-      console.log('Latest Trading Plan:', JSON.stringify(latestPlan, null, 2));
       
       if (!latestPlan) {
         console.log('No existing trading plan found for', symbol);
@@ -95,16 +94,36 @@ export class TradingBot {
       const marketData = await this.binanceService.fetchMarketData(symbol, interval as Interval);
       
       // Validate if the plan is still valid under current conditions
-      const isStillValid = await this.openAIService.validateTradingConditions(latestPlan, marketData);
+      const validation = await this.openAIService.validateTradingConditions(latestPlan, marketData);
 
-      console.log('Plan recheck result:', isStillValid ? 'Still valid' : 'No longer valid');
+      console.log('\nPlan Validation Results:');
+      console.log('------------------------');
+      console.log(`Status: ${validation.status}`);
       
-      if (!isStillValid) {
-        // Mark the plan as skipped if it's no longer valid
-        await this.updateTradingProgress(latestPlan.id, TradingProgress.SKIPPED, undefined, 'Plan invalidated by market conditions');
-        console.log('Previous plan marked as skipped due to changed market conditions');
+      if (validation.isValid) {
+        if (validation.status === 'WAIT') {
+          console.log(`⏳ Plan is still valid - Waiting time: ${validation.timeEstimate}`);
+          console.log(`Reason: ${validation.reason}`);
+          
+          console.log('\nMarket Changes:');
+          console.log(`- Price Action: ${validation.marketChanges.priceAction}`);
+          console.log(`- Indicators: ${validation.marketChanges.indicatorChanges}`);
+          console.log(`- Volume: ${validation.marketChanges.volumeProfile}`);
+          console.log(`- Pattern Status: ${validation.marketChanges.patternStatus}`);
+          
+          console.log(`\nRecommended Action: ${validation.recommendedAction}`);
+        }
       } else {
-        console.log('Plan is still valid, waiting for trade conditions');
+        // Mark the plan as skipped if it's no longer valid
+        await this.updateTradingProgress(latestPlan.id, TradingProgress.SKIPPED, undefined, 
+          `Plan invalidated: ${validation.reason}\nMarket Changes:\n` +
+          `- Price Action: ${validation.marketChanges.priceAction}\n` +
+          `- Indicators: ${validation.marketChanges.indicatorChanges}\n` +
+          `- Volume: ${validation.marketChanges.volumeProfile}\n` +
+          `- Pattern Status: ${validation.marketChanges.patternStatus}`
+        );
+        console.log('❌ Previous plan marked as skipped due to changed market conditions');
+        console.log(`Reason: ${validation.reason}`);
       }
     } catch (error) {
       console.error('Error rechecking last plan:', error);

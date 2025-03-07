@@ -77,9 +77,13 @@ export class PromptFactory {
 
   static createValidationPrompt(plan: TradingPlan, currentData: TradingData): string {
     return `
+      Analyze if this trading plan is still valid under current market conditions.
+      
       Previous trading plan: ${JSON.stringify(plan)}
 
       Current market conditions:
+      Symbol: ${currentData.symbol}
+      Timeframe/Interval: ${currentData.interval}
       Last 100 candles: ${JSON.stringify(currentData.last100Candles)}
       Technical Indicators:
       - RSI (14): ${currentData.indicators.rsi}
@@ -89,11 +93,36 @@ export class PromptFactory {
       - ADX (14): ${currentData.indicators.adx}
       - Recent Price: ${currentData.last100Candles[currentData.last100Candles.length - 1].close}
 
+      Rules for validation:
+      1. Compare current price levels with planned entry points
+      2. Check if technical indicators still support the trade
+      3. Verify if key support/resistance levels are still relevant
+      4. Analyze if market structure matches the original plan
+      5. Evaluate if risk/reward ratio is still favorable
+      6. Consider market momentum and volume
+      7. Check if pattern or setup is still forming/valid
+
       Respond with a JSON object only:
       {
         "isValid": boolean,
-        "reason": "string explaining why the plan is still valid or not"
+        "status": "WAIT" | "SKIP",
+        "timeEstimate": "string describing how long to wait if status is WAIT (e.g., '2-3 hours', '30-45 minutes')",
+        "reason": "detailed explanation of why the plan is still valid/invalid and what changed in market conditions",
+        "marketChanges": {
+          "priceAction": "describe price movement relative to plan",
+          "indicatorChanges": "describe how indicators evolved",
+          "volumeProfile": "describe volume changes",
+          "patternStatus": "describe if patterns completed/failed"
+        },
+        "recommendedAction": "specific action to take (wait with timeframe, skip with reason, or modify with suggestions)"
       }
+
+      Notes:
+      - If the plan is still valid but needs time, set isValid=true, status="WAIT" and provide timeEstimate
+      - If the opportunity has passed or setup invalidated, set isValid=false, status="SKIP"
+      - Be specific about timeframes in timeEstimate
+      - Provide detailed reasoning for market changes
+      - Consider the original timeframe (${currentData.interval}) when estimating waiting time
     `;
   }
 } 

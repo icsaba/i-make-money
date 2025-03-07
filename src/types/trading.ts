@@ -1,3 +1,17 @@
+export interface TradingPlanValidation {
+  isValid: boolean;
+  status: 'WAIT' | 'SKIP';
+  timeEstimate: string;
+  reason: string;
+  marketChanges: {
+    priceAction: string;
+    indicatorChanges: string;
+    volumeProfile: string;
+    patternStatus: string;
+  };
+  recommendedAction: string;
+}
+
 export interface TradingPlan {
   direction: 'long' | 'short';
   entryPrice: number;

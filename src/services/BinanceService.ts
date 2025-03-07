@@ -19,6 +19,7 @@ export class BinanceService {
 
       return {
         symbol,
+        interval,
         last100Candles,
         indicators
       };

@@ -15,6 +15,7 @@ export interface TradingPlan {
 
 export interface TradingData {
   symbol: string;
+  interval: string;
   last100Candles: Candle[];
   indicators: Indicators;
 }

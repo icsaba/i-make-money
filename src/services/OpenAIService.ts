@@ -58,6 +58,7 @@ export class OpenAIService {
       });
 
       const content = response.choices[0].message.content;
+      console.log('Validation Response:', content);
       
       // Extract JSON from the response
       const jsonMatch = content?.match(/\{[\s\S]*\}/);

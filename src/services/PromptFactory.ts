@@ -5,6 +5,7 @@ export class PromptFactory {
     return `
       Analyze this trading data and provide a trading plan:
       Symbol: ${data.symbol}
+      Timeframe/Interval: ${data.interval}
       Last 100 candles from Binance: ${JSON.stringify(data.last100Candles)}
       Technical Indicators:
       - RSI (14): ${data.indicators.rsi}
@@ -70,6 +71,7 @@ export class PromptFactory {
          - Stop loss with reasoning
          - Trailing stop parameters
          - Pattern invalidation levels
+      9. The timeframe in the trading plan MUST match the interval of the analyzed data (${data.interval})
     `;
   }
 

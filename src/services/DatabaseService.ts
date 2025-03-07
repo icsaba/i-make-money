@@ -2,9 +2,10 @@ import * as sqlite3 from 'sqlite3';
 import { Database } from 'sqlite3';
 
 export enum TradingProgress {
-  SKIPPED = 'skipped',
-  TRADED = 'traded',
-  IN_PROGRESS = 'in_progress'
+  IN_PROGRESS = 'IN_PROGRESS',
+  SKIPPED = 'SKIPPED',
+  TRADED = 'TRADED',
+  CLOSED = 'CLOSED'
 }
 
 export interface MarketCondition {

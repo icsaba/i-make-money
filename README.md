@@ -1,5 +1,27 @@
 # Trading Bot
 
+## Usage
+
+### Generate a new trading plan
+```bash 
+npm run start analyze BTCUSDT
+```
+
+### Generate a new trading plan with custom interval
+```bash 
+npm run start analyze BTCUSDT -- -i 1h
+```
+
+### Recheck existing plan
+```bash 
+npm run start analyze BTCUSDT -- -r
+```
+
+### Recheck with custom interval
+```bash 
+npm run start analyze BTCUSDT -- -i 4h -r
+```
+
 ## Environment Setup
 
 1. Copy `.env.example` to `.env`:

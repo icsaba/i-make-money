@@ -1,6 +1,6 @@
 import { Interval, Spot } from '@binance/connector-typescript';
 import { TradingPlan } from '../types/trading';
-import { SMCTradingBot } from './SMCTradingBot';
+import { SMCTradingBot } from '../bots/SMCTradingBot';
 
 /**
  * Manager for the SMC Trading Bot that handles periodic scanning

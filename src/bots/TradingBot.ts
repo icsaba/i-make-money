@@ -1,7 +1,7 @@
-import { BinanceService } from './BinanceService';
-import { OpenAIService } from './OpenAIService';
-import { DatabaseService, TradingProgress } from './DatabaseService';
-import { MarketAnalysisService } from './MarketAnalysisService';
+import { BinanceService } from '../services/BinanceService';
+import { OpenAIService } from '../services/OpenAIService';
+import { DatabaseService, TradingProgress } from '../services/DatabaseService';
+import { MarketAnalysisService } from '../services/MarketAnalysisService';
 import { TradingPlan } from '../types/trading';
 import { Interval } from '@binance/connector-typescript';
 

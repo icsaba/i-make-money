@@ -1,10 +1,10 @@
 import { Command } from 'commander';
-import { TradingBot } from './services/TradingBot';
+import { TradingBot } from './bots/TradingBot';
 import { Interval, Spot } from '@binance/connector-typescript';
 import * as dotenv from 'dotenv';
 import * as chalk from 'chalk';
-import { SMCTradingBot } from './services/SMCTradingBot';
-import { SMCTradingManager } from './services/SMCTradingManager';
+import { SMCTradingBot } from './bots/SMCTradingBot';
+import { SMCTradingManager } from './managers/SMCTradingManager';
 
 // Load environment variables
 dotenv.config();

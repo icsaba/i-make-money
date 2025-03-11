@@ -1,6 +1,6 @@
 # Trading Bot
 
-## Usage
+## Usage of AI plan analyzer
 
 ### Generate a new trading plan
 ```bash 
@@ -21,6 +21,13 @@ npm run start analyze BTCUSDT -- -r
 ```bash 
 npm run start analyze BTCUSDT -- -i 4h -r
 ```
+
+## Usage of SMC algo trader
+
+```bash
+npm start monitor-smc -- --symbols BTCUSDT,ETHUSDT,BNBUSDT,LTCUSDT --interval 5
+```
+
 
 ## Environment Setup
 

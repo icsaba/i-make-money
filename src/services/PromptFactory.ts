@@ -125,4 +125,111 @@ export class PromptFactory {
       - Consider the original timeframe (${currentData.interval}) when estimating waiting time
     `;
   }
+
+  static createSMCAnalysisPrompt(data: TradingData): string {
+    return `
+      Analyze this trading data using Smart Money Concepts (SMC) and provide a trading plan for the next 2 candles:
+      Symbol: ${data.symbol}
+      Timeframe/Interval: ${data.interval}
+      Last 100 candles: ${JSON.stringify(data.last100Candles)}
+      Technical Indicators:
+      - RSI (14): ${data.indicators.rsi}
+      - EMA20: ${data.indicators.ema20}
+      - EMA50: ${data.indicators.ema50}
+      - EMA200: ${data.indicators.ema200}
+      - ADX (14): ${data.indicators.adx}
+      - Recent Price: ${data.last100Candles[data.last100Candles.length - 1].close}
+
+      Analyze using SMC principles:
+      1. Order Blocks: Look for strong momentum candles followed by reversals
+      2. Liquidity: Identify areas where retail traders place stop losses
+      3. Market Structure: Analyze HH/LL and HL/LH for trend direction
+      4. Fair Value Gaps (FVGs): Find non-overlapping candles indicating institutional activity
+      5. Breaker Blocks: Identify former support/resistance zones that have flipped
+      6. Imbalances: Look for rapid price moves showing institutional activity
+      7. Inducement: Identify potential stop hunts or retail trap setups
+
+      Provide analysis in JSON format only:
+      {
+        "smcAnalysis": {
+          "marketStructure": {
+            "trend": "uptrend|downtrend|ranging",
+            "keyLevels": [
+              {
+                "price": number,
+                "type": "support|resistance|breaker",
+                "strength": number (0-1)
+              }
+            ],
+            "swings": [
+              {
+                "price": number,
+                "type": "HH|LL|HL|LH",
+                "timestamp": number
+              }
+            ]
+          },
+          "patterns": [
+            {
+              "type": "OrderBlock|FairValueGap|BreakerBlock|Liquidity|Imbalance|Inducement",
+              "direction": "bullish|bearish",
+              "price": number,
+              "confidence": number (0-1),
+              "timeframe": string,
+              "timestamp": number
+            }
+          ],
+          "liquidityLevels": [
+            {
+              "price": number,
+              "type": "buy|sell",
+              "strength": number (0-1)
+            }
+          ],
+          "orderBlocks": [
+            {
+              "price": number,
+              "direction": "bullish|bearish",
+              "strength": number (0-1),
+              "active": boolean
+            }
+          ]
+        },
+        "tradingPlan": {
+          "direction": "long|short",
+          "entryPrice": number,
+          "stopLoss": number,
+          "targets": [numbers],
+          "confidenceScore": number (0-1),
+          "timeframe": string,
+          "positionSize": number,
+          "maxLossPercentage": number,
+          "riskRewardRatio": number,
+          "entryConditions": [strings],
+          "exitConditions": [strings],
+          "tradingPatterns": [strings]
+        }
+      }
+
+      Rules:
+      1. Only provide high confidence setups (>0.7)
+      2. Focus on 5M and 15M timeframes for execution
+      3. Plan must be executable within next 2 candles
+      4. If no clear setup exists, return null for tradingPlan
+      5. Entry must align with institutional order flow
+      6. Consider multiple timeframe confirmation
+      7. Risk management:
+         - Maximum 1% risk per trade
+         - Minimum 1:1.5 risk-reward ratio
+         - Stop loss must be behind valid SMC structure
+      8. Entry conditions must include:
+         - SMC pattern confirmation
+         - Market structure alignment
+         - Liquidity level interaction
+      9. Exit conditions must specify:
+         - Pattern invalidation criteria
+         - Key level targets
+         - Stop loss placement logic
+    `;
+  }
 } 

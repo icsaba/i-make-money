@@ -1,6 +1,9 @@
 import { Interval, Spot } from '@binance/connector-typescript';
 import { TradingPlan } from '../types/trading';
 import { SMCTradingBot } from '../bots/SMCTradingBot';
+import { SMCWalletService } from '../services/SMCWalletService';
+import { DatabaseService } from '../services/DatabaseService';
+import chalk = require('chalk');
 
 /**
  * Manager for the SMC Trading Bot that handles periodic scanning
@@ -11,11 +14,12 @@ export class SMCTradingManager {
   private binanceClient: Spot;
   private activeSymbols: string[];
   private interval: number;
-  private activeTrades: Map<string, boolean> = new Map();
+  private walletService: SMCWalletService;
   private monitorIntervals: Map<string, NodeJS.Timeout> = new Map();
   private isRunning: boolean = false;
   private currentPrices: Map<string, number> = new Map();
   private priceUpdateInterval: NodeJS.Timeout | null = null;
+  private dbService: DatabaseService;
 
   /**
    * Creates a new instance of SMCTradingManager
@@ -38,6 +42,8 @@ export class SMCTradingManager {
       );
     }
     
+    this.dbService = new DatabaseService();
+    this.walletService = new SMCWalletService(this.dbService.getDatabase());
     this.smcBot = new SMCTradingBot(this.binanceClient);
     this.activeSymbols = symbols;
     this.interval = intervalMinutes * 60 * 1000;
@@ -52,15 +58,13 @@ export class SMCTradingManager {
       return;
     }
 
+    await this.dbService.initializeDatabase();
+    await this.walletService.initializeWallet();
+
     this.isRunning = true;
     console.log('Starting SMC Trading Manager...');
     console.log(`Monitoring symbols: ${this.activeSymbols.join(', ')}`);
     console.log(`Scan interval: ${this.interval / 60000} minutes`);
-    
-    // Initialize active trades map
-    this.activeSymbols.forEach(symbol => {
-      this.activeTrades.set(symbol, false);
-    });
     
     // Start price updates
     await this.updateCurrentPrices();
@@ -115,7 +119,6 @@ export class SMCTradingManager {
   addSymbol(symbol: string): void {
     if (!this.activeSymbols.includes(symbol)) {
       this.activeSymbols.push(symbol);
-      this.activeTrades.set(symbol, false);
       console.log(`Added ${symbol} to monitoring list`);
     }
   }
@@ -128,7 +131,6 @@ export class SMCTradingManager {
     const index = this.activeSymbols.indexOf(symbol);
     if (index !== -1) {
       this.activeSymbols.splice(index, 1);
-      this.activeTrades.delete(symbol);
       
       // Clear monitoring interval if exists
       const monitorInterval = this.monitorIntervals.get(symbol);
@@ -144,12 +146,13 @@ export class SMCTradingManager {
   /**
    * Get the current status of all monitored symbols
    */
-  getStatus(): Record<string, { isActive: boolean }> {
+  async getStatus(): Promise<Record<string, { isActive: boolean }>> {
+    const activeTradesMap = await this.walletService.getActiveTradesBySymbols(this.activeSymbols);
     const status: Record<string, { isActive: boolean }> = {};
     
     this.activeSymbols.forEach(symbol => {
       status[symbol] = {
-        isActive: this.activeTrades.get(symbol) || false
+        isActive: activeTradesMap.get(symbol) || false
       };
     });
     
@@ -164,9 +167,11 @@ export class SMCTradingManager {
     try {
       console.log(`[${new Date().toISOString()}] Scanning markets for SMC setups...`);
       
+      const activeTradesMap = await this.walletService.getActiveTradesBySymbols(this.activeSymbols);
+      
       for (const symbol of this.activeSymbols) {
         // Skip if we already have an active trade for this symbol
-        if (this.activeTrades.get(symbol)) {
+        if (activeTradesMap.get(symbol)) {
           console.log(`  - Skipping ${symbol} - Active trade in progress`);
           continue;
         }
@@ -184,10 +189,7 @@ export class SMCTradingManager {
             timeframe: tradingPlan.timeframe
           });
 
-          // Mark symbol as having active trade
-          this.activeTrades.set(symbol, true);
-
-          // Handle the trading plan
+          // Execute the trading plan
           await this.executeTradingPlan(symbol, tradingPlan);
         } else {
           console.log(`  - No valid setup found for ${symbol}`);
@@ -215,6 +217,19 @@ export class SMCTradingManager {
       console.log(`  - Targets: ${plan.targets.join(', ')}`);
       console.log(`  - Position size: ${plan.positionSize}`);
       
+      // Record the trade in the wallet service
+      const tradeId = await this.walletService.recordTrade({
+        symbol,
+        direction: plan.direction,
+        entry: plan.entryPrice,
+        stopLoss: plan.stopLoss,
+        target: plan.targets[0], // Using first target
+        confidence: plan.confidenceScore,
+        positionSize: plan.positionSize,
+        timeframe: plan.timeframe,
+        enterDate: new Date()
+      });
+      
       // Here you would implement order placement logic
       // For example:
       // await this.placeEntryOrder(symbol, plan);
@@ -228,7 +243,6 @@ export class SMCTradingManager {
       this.monitorTrade(symbol, plan);
     } catch (error) {
       console.error(`Error executing trade for ${symbol}:`, error);
-      this.activeTrades.set(symbol, false); // Reset active trade flag
     }
   }
 
@@ -238,7 +252,7 @@ export class SMCTradingManager {
    * @param plan The trading plan being monitored
    * @private
    */
-  private monitorTrade(symbol: string, plan: TradingPlan): void {
+  private async monitorTrade(symbol: string, plan: TradingPlan): Promise<void> {
     console.log(`Starting trade monitor for ${symbol}`);
     
     // Clear any existing monitoring interval
@@ -247,7 +261,7 @@ export class SMCTradingManager {
     }
     
     // Set up new monitoring interval
-    const checkInterval = setInterval(() => {
+    const checkInterval = setInterval(async () => {
       try {
         if (!this.isRunning) {
           clearInterval(checkInterval);
@@ -260,18 +274,26 @@ export class SMCTradingManager {
           return; // Skip if price not available
         }
         
+        const tradeId = await this.walletService.getActiveTradeId(symbol);
+        if (!tradeId) {
+          clearInterval(checkInterval);
+          return;
+        }
+        
         // Check if stop loss hit
         if (this.isStopLossHit(currentPrice, plan)) {
-          console.log(`[${symbol}] Stop loss hit at ${currentPrice}`);
-          this.completeTrade(symbol, checkInterval, 'Stop loss');
+          console.log(chalk.red(`[${symbol}] Stop loss hit at ${currentPrice}`));
+          await this.completeTrade(symbol, tradeId, currentPrice, plan, 'Stop loss');
+          clearInterval(checkInterval);
           return;
         }
         
         // Check if any target hit
         const targetHit = this.isTargetHit(currentPrice, plan);
         if (targetHit !== -1) {
-          console.log(`[${symbol}] Target ${targetHit + 1} hit at ${currentPrice}`);
-          this.completeTrade(symbol, checkInterval, `Target ${targetHit + 1}`);
+          console.log(chalk.green(`[${symbol}] Target ${targetHit + 1} hit at ${currentPrice}`));
+          await this.completeTrade(symbol, tradeId, currentPrice, plan, `Target ${targetHit + 1}`);
+          clearInterval(checkInterval);
           return;
         }
         
@@ -285,24 +307,30 @@ export class SMCTradingManager {
   }
 
   /**
-   * Complete a trade and reset monitoring
+   * Complete a trade and record the result
    * @param symbol The trading pair
-   * @param checkInterval The interval to clear
+   * @param tradeId The trade ID
+   * @param currentPrice The current price
+   * @param plan The trading plan
    * @param reason The reason for completion
    * @private
    */
-  private completeTrade(symbol: string, checkInterval: NodeJS.Timeout, reason: string): void {
-    clearInterval(checkInterval);
-    this.monitorIntervals.delete(symbol);
-    this.activeTrades.set(symbol, false);
+  private async completeTrade(
+    symbol: string,
+    tradeId: number,
+    currentPrice: number,
+    plan: TradingPlan,
+    reason: string
+  ): Promise<void> {
+    const profitLoss = plan.direction === 'long'
+      ? (currentPrice - plan.entryPrice) * plan.positionSize
+      : (plan.entryPrice - currentPrice) * plan.positionSize;
+
+    await this.walletService.closeTrade(tradeId, profitLoss, reason);
     
-    console.log(`Trade completed for ${symbol}. Reason: ${reason}`);
-    console.log(`${symbol} is now available for new setups`);
-    
-    // Here you would implement any trade completion logic:
-    // - Record trade result in database
-    // - Send notifications
-    // - Update performance metrics
+    console.log(chalk.blue(`Trade completed for ${symbol}. Reason: ${reason}`));
+    console.log(chalk.blue(`Profit/Loss: ${profitLoss > 0 ? '+' : ''}${profitLoss.toFixed(2)} USD`));
+    console.log(chalk.blue(`${symbol} is now available for new setups`));
   }
 
   /**

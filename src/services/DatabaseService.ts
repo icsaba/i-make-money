@@ -41,8 +41,8 @@ export class DatabaseService {
     });
   }
 
-  private async initializeDatabase() {
-    const createTable = `
+  async initializeDatabase() {
+    const createTradingPlansTable = `
       CREATE TABLE IF NOT EXISTS trading_plans (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
         symbol TEXT NOT NULL,
@@ -64,15 +64,59 @@ export class DatabaseService {
       )
     `;
 
+    const createWalletTable = `
+      CREATE TABLE IF NOT EXISTS wallet (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        balance REAL NOT NULL DEFAULT 10000,
+        position_size REAL NOT NULL DEFAULT 0.2,
+        updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
+      )
+    `;
+
+    const createTradesTable = `
+      CREATE TABLE IF NOT EXISTS trades (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        symbol TEXT NOT NULL,
+        direction TEXT NOT NULL,
+        entry REAL NOT NULL,
+        stopLoss REAL NOT NULL,
+        target REAL NOT NULL,
+        confidence REAL NOT NULL,
+        positionSize REAL NOT NULL,
+        profitLoss REAL,
+        timeframe TEXT NOT NULL,
+        enterDate DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+        exitDate DATETIME,
+        reason TEXT,
+        created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+      )
+    `;
+
     return new Promise<void>((resolve, reject) => {
-      this.db.run(createTable, (err) => {
-        if (err) {
-          console.error('Error creating table:', err);
-          reject(err);
-        } else {
-          console.log('Trading plans table initialized');
-          resolve();
-        }
+      this.db.serialize(() => {
+        this.db.run(createTradingPlansTable, (err) => {
+          if (err) {
+            console.error('Error creating trading plans table:', err);
+            reject(err);
+          }
+        });
+
+        this.db.run(createWalletTable, (err) => {
+          if (err) {
+            console.error('Error creating wallet table:', err);
+            reject(err);
+          }
+        });
+
+        this.db.run(createTradesTable, (err) => {
+          if (err) {
+            console.error('Error creating trades table:', err);
+            reject(err);
+          } else {
+            console.log('All tables initialized');
+            resolve();
+          }
+        });
       });
     });
   }
@@ -229,5 +273,9 @@ export class DatabaseService {
         }
       });
     });
+  }
+
+  getDatabase(): Database {
+    return this.db;
   }
 } 

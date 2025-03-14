@@ -150,11 +150,12 @@ export class SMCTradingBot {
       
       // Find SMC patterns on lower timeframes
       const patterns5m = this.findSMCPatterns(data5m, '5m');
-      const patterns15m = this.findSMCPatterns(data1h, '1h');
+      const patterns15m = this.findSMCPatterns(data15m, '15m');
+      const patterns1h = this.findSMCPatterns(data1h, '1h');
 
       // Combine all analysis
       const analysis: SMCAnalysis = {
-        patterns: [...patterns5m, ...patterns15m],
+        patterns: [...patterns5m, ...patterns15m, ...patterns1h],
         marketStructure,
         liquidityLevels: this.findLiquidityLevels(data15m),
         orderBlocks: this.findOrderBlocks(data15m),

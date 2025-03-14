@@ -24,7 +24,7 @@ export interface TradingPlan {
   riskRewardRatio: number;
   entryConditions: string[];
   exitConditions: string[];
-  tradingPatterns: string[];
+  tradingPatterns: PatternType[];
 }
 
 export interface TradingData {
@@ -35,12 +35,12 @@ export interface TradingData {
 }
 
 export interface Candle {
+  timestamp: number;
   open: number;
   high: number;
   low: number;
   close: number;
   volume: number;
-  timestamp: number;
 }
 
 export interface Indicators {
@@ -58,8 +58,11 @@ export interface MarketMetrics {
   priceChange24h: number;
 }
 
+export type PatternType = 'OrderBlock' | 'FairValueGap' | 'ChoCH' | 'BOS' | 'LiquidityGrab';
+export type TradeDirection = 'long' | 'short';
+
 export interface SMCPattern {
-  type: 'OrderBlock' | 'FairValueGap' | 'BreakerBlock' | 'Liquidity' | 'Imbalance' | 'Inducement';
+  type: PatternType;
   direction: 'bullish' | 'bearish';
   price: number;
   confidence: number;
@@ -89,12 +92,7 @@ export interface SMCAnalysis {
     type: 'buy' | 'sell';
     strength: number;
   }[];
-  orderBlocks: {
-    price: number;
-    direction: 'bullish' | 'bearish';
-    strength: number;
-    active: boolean;
-  }[];
+  orderBlocks: SMCPattern[];
   keyLevels: {
     price: number;
     type: 'support' | 'resistance' | 'breaker';

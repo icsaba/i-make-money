@@ -166,7 +166,7 @@ export class SMCTradingBot {
         keyLevels: this.identifyKeyLevels(data4h)
       };
 
-      return this.generateTradingPlan(analysis, symbol);
+      return this.generateTradingPlan(analysis, data5m);
     } catch (error) {
       console.error('Error in analyzeSMC:', error);
       return null;
@@ -448,7 +448,7 @@ export class SMCTradingBot {
     return direction === 'bullish' ? 'long' : 'short';
   }
 
-  private generateTradingPlan(analysis: SMCAnalysis, symbol: string): TradingPlan | null {
+  private generateTradingPlan(analysis: SMCAnalysis, data5m: Candle[]): TradingPlan | null {
     // Find high confidence patterns
     const highConfidencePatterns = analysis.patterns.filter(p => p.confidence > 0.7);
     if (highConfidencePatterns.length === 0) return null;
@@ -466,7 +466,7 @@ export class SMCTradingBot {
     }
 
     // Calculate entry, stop loss and targets
-    const setup = this.calculateTradeSetup(mainPattern, patterns, analysis);
+    const setup = this.calculateTradeSetup(mainPattern, analysis, data5m);
     if (!setup) return null;
 
     return {
@@ -543,13 +543,13 @@ export class SMCTradingBot {
 
   private calculateTradeSetup(
     mainPattern: SMCPattern,
-    patterns: SMCPattern[],
-    analysis: SMCAnalysis
+    analysis: SMCAnalysis,
+    data5m: Candle[]
   ): { entry: number; stopLoss: number; targets: number[]; riskRewardRatio: number; } | null {
     const entry = mainPattern.price;
     
-    // Get current price from the most recent candle
-    const currentPrice = analysis.patterns[0].price;
+    // Get current price from the last 5min candle
+    const currentPrice = data5m[data5m.length - 1].close;
     
     // Check if current price is within 0.25% of entry price
     const priceDiff = Math.abs(currentPrice - entry) / entry;

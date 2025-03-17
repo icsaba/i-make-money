@@ -451,7 +451,10 @@ export class SMCTradingBot {
   private generateTradingPlan(analysis: SMCAnalysis, data5m: Candle[]): TradingPlan | null {
     // Find high confidence patterns
     const highConfidencePatterns = analysis.patterns.filter(p => p.confidence > 0.7);
-    if (highConfidencePatterns.length === 0) return null;
+    if (highConfidencePatterns.length === 0) {
+      console.log('\x1b[33m⚠️ No high confidence patterns found\x1b[0m');
+      return null;
+    }
 
     // Prioritize patterns by type and timeframe
     const patterns = this.prioritizePatterns(highConfidencePatterns);
@@ -469,12 +472,15 @@ export class SMCTradingBot {
     const setup = this.calculateTradeSetup(mainPattern, analysis, data5m);
     if (!setup) return null;
 
+    // Calculate confidence score and check for A+ setup
+    const confidenceScore = this.calculateConfidenceScore(patterns, analysis);
+    
     return {
       direction: this.mapDirectionToTradeDirection(mainPattern.direction),
       entryPrice: setup.entry,
       stopLoss: setup.stopLoss,
       targets: setup.targets,
-      confidenceScore: this.calculateConfidenceScore(patterns, analysis),
+      confidenceScore,
       timeframe: mainPattern.timeframe,
       positionSize: 1,
       maxLossPercentage: 1,
@@ -588,16 +594,24 @@ export class SMCTradingBot {
 
   private calculateConfidenceScore(patterns: SMCPattern[], analysis: SMCAnalysis): number {
     let score = patterns[0].confidence;
+    const aPlus = this.isAPlusSetup(patterns[0], patterns, analysis);
 
-    // Boost confidence based on pattern confluence
+    // Boost confidence for A+ setups
+    if (aPlus.isAPlus) {
+      score = Math.min(score + 0.2, 1);
+      console.log('\x1b[32m🌟 A+ Setup Detected!\x1b[0m');
+      aPlus.reasons.forEach(reason => {
+        console.log(`\x1b[32m${reason}\x1b[0m`);
+      });
+    }
+
+    // Additional confidence boosts
     if (patterns.length > 1) {
       score += 0.1 * (patterns.length - 1);
     }
 
-    // Boost confidence if market structure aligns
-    if (patterns[0].direction === 'bullish' && analysis.marketStructure.trend === 'uptrend') {
-      score += 0.1;
-    } else if (patterns[0].direction === 'bearish' && analysis.marketStructure.trend === 'downtrend') {
+    if (patterns[0].direction === 'bullish' && analysis.marketStructure.trend === 'uptrend' ||
+        patterns[0].direction === 'bearish' && analysis.marketStructure.trend === 'downtrend') {
       score += 0.1;
     }
 
@@ -763,5 +777,70 @@ export class SMCTradingBot {
 
     // Sort groups by count (strength) in descending order
     return groups.sort((a, b) => b.count - a.count);
+  }
+
+  private isAPlusSetup(
+    mainPattern: SMCPattern,
+    patterns: SMCPattern[],
+    analysis: SMCAnalysis
+  ): { isAPlus: boolean; reasons: string[] } {
+    const reasons: string[] = [];
+    let criteriaCount = 0;
+
+    // 1. Higher Timeframe Alignment
+    if (mainPattern.timeframe === '4h' || mainPattern.timeframe === '1h') {
+      if ((mainPattern.direction === 'bullish' && analysis.marketStructure.trend === 'uptrend') ||
+          (mainPattern.direction === 'bearish' && analysis.marketStructure.trend === 'downtrend')) {
+        criteriaCount++;
+        reasons.push('✅ Higher timeframe alignment');
+      }
+    }
+
+    // 2. Multiple Pattern Confluence
+    const confluencePatterns = patterns.filter(p => 
+      Math.abs(p.price - mainPattern.price) / mainPattern.price < 0.003 && // Within 0.3%
+      p.direction === mainPattern.direction &&
+      p !== mainPattern
+    );
+    if (confluencePatterns.length >= 1) {
+      criteriaCount++;
+      reasons.push(`✅ Pattern confluence: ${confluencePatterns.map(p => p.type).join(', ')}`);
+    }
+
+    // 3. Key Level Confluence
+    const nearbyKeyLevels = analysis.keyLevels.filter(level => 
+      Math.abs(level.price - mainPattern.price) / mainPattern.price < 0.003
+    );
+    if (nearbyKeyLevels.length > 0) {
+      criteriaCount++;
+      reasons.push('✅ Key level confluence');
+    }
+
+    // 4. Strong Pattern Types
+    if (['BOS', 'ChoCH'].includes(mainPattern.type)) {
+      criteriaCount++;
+      reasons.push('✅ High-priority pattern type');
+    }
+
+    // 5. Liquidity Presence
+    const hasLiquidity = analysis.liquidityLevels.some(level => 
+      (mainPattern.direction === 'bullish' && level.type === 'buy' ||
+       mainPattern.direction === 'bearish' && level.type === 'sell') &&
+      Math.abs(level.price - mainPattern.price) / mainPattern.price < 0.005
+    );
+    if (hasLiquidity) {
+      criteriaCount++;
+      reasons.push('✅ Liquidity presence confirmed');
+    }
+
+    // A+ setup requires at least 4 out of 5 criteria
+    const isAPlus = criteriaCount >= 4;
+    
+    if (!isAPlus) {
+      const missingCriteria = 5 - criteriaCount;
+      reasons.push(`❌ Missing ${missingCriteria} key criteria for A+ rating`);
+    }
+
+    return { isAPlus, reasons };
   }
 } 

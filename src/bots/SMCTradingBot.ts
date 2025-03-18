@@ -139,27 +139,43 @@ export class SMCTradingBot {
 
   async analyzeSMC(symbol: string): Promise<TradingPlan | null> {
     try {
+      console.log(`\x1b[36m🔍 Analyzing ${symbol} for SMC patterns...\x1b[0m`);
+      
       // Get data from multiple timeframes with cache
       const data5m = await this.getKlinesWithCache(symbol, '5m', 100);
       const data15m = await this.getKlinesWithCache(symbol, '15m', 100);
-      const data1h = await this.getKlinesWithCache(symbol, '1h', 100);
-      const data4h = await this.getKlinesWithCache(symbol, '4h', 50);
+      const data1h = await this.getKlinesWithCache(symbol, '1h', 100); // For market structure context only
+      const data4h = await this.getKlinesWithCache(symbol, '4h', 50);  // For market structure context only
 
-      // Analyze market structure on higher timeframes
+      // Analyze market structure on higher timeframes for context only
       const marketStructure = this.analyzeMarketStructure(data4h, data1h);
       
-      // Find patterns on optimized timeframes
+      // Find patterns ONLY on 5m and 15m timeframes
       const patterns = [
-        ...this.findOrderBlocks(data15m, '15m'), // Order blocks on 15m
-        ...this.findFairValueGaps(data5m, '5m'), // FVG on 5m for precision
-        ...this.findChoCH(data4h, '4h'), // ChoCH on 4h for major structure
-        ...this.findBOS(data1h, '1h'), // BOS on 1h for confirmation
-        ...this.findLiquidityGrabs(data15m, '15m') // Liquidity grabs on 15m
+        ...this.findPatterns(data15m, '15m', 'OrderBlock'),
+        ...this.findPatterns(data5m, '5m', 'OrderBlock'),
+        ...this.findPatterns(data15m, '15m', 'FairValueGap'),
+        ...this.findPatterns(data5m, '5m', 'FairValueGap'),
+        ...this.findPatterns(data15m, '15m', 'LiquidityGrab'),
+        ...this.findPatterns(data5m, '5m', 'LiquidityGrab'),
+        ...this.findPatterns(data15m, '15m', 'BOS'),
+        ...this.findPatterns(data5m, '5m', 'BOS'),
+        ...this.findPatterns(data15m, '15m', 'ChoCH'),
+        ...this.findPatterns(data5m, '5m', 'ChoCH')
       ];
+
+      // Filter out patterns older than 24 hours
+      const oneDayAgo = Date.now() - (24 * 60 * 60 * 1000);
+      const recentPatterns = patterns.filter(pattern => pattern.timestamp > oneDayAgo);
+
+      if (recentPatterns.length === 0) {
+        console.log('\x1b[33m⚠️ No recent patterns found in lower timeframes\x1b[0m');
+        return null;
+      }
 
       // Combine all analysis
       const analysis: SMCAnalysis = {
-        patterns,
+        patterns: recentPatterns,
         marketStructure,
         liquidityLevels: this.findLiquidityLevels(data15m),
         orderBlocks: this.findOrderBlocks(data15m, '15m'),
@@ -168,7 +184,7 @@ export class SMCTradingBot {
 
       return this.generateTradingPlan(analysis, data5m);
     } catch (error) {
-      console.error('Error in analyzeSMC:', error);
+      console.error('\x1b[31m❌ Error in analyzeSMC:', error, '\x1b[0m');
       return null;
     }
   }
@@ -500,9 +516,8 @@ export class SMCTradingBot {
       'FairValueGap': 1
     };
 
+    // Modified timeframe priority to only consider 15m and 5m
     const timeframePriority: Record<string, number> = {
-      '4h': 4,
-      '1h': 3,
       '15m': 2,
       '5m': 1
     };
@@ -512,7 +527,7 @@ export class SMCTradingBot {
       const priorityDiff = patternPriority[b.type] - patternPriority[a.type];
       if (priorityDiff !== 0) return priorityDiff;
       
-      // Then by timeframe
+      // Then by timeframe (only 15m and 5m)
       const timeframeDiff = timeframePriority[b.timeframe] - timeframePriority[a.timeframe];
       if (timeframeDiff !== 0) return timeframeDiff;
       
@@ -552,15 +567,36 @@ export class SMCTradingBot {
     analysis: SMCAnalysis,
     data5m: Candle[]
   ): { entry: number; stopLoss: number; targets: number[]; riskRewardRatio: number; } | null {
+    // Only allow 5m and 15m timeframe patterns
+    if (mainPattern.timeframe !== '5m' && mainPattern.timeframe !== '15m') {
+      console.log(`\x1b[33m⚠️ Pattern rejected: Invalid timeframe ${mainPattern.timeframe} (only 5m and 15m allowed)\x1b[0m`);
+      return null;
+    }
+
+    // Check if pattern is too old (more than 24 hours)
+    const oneDayAgo = Date.now() - (24 * 60 * 60 * 1000);
+    if (mainPattern.timestamp < oneDayAgo) {
+      console.log(`\x1b[33m⚠️ Pattern rejected: Too old (more than 24 hours)\x1b[0m`);
+      return null;
+    }
+
     const entry = mainPattern.price;
-    
-    // Get current price from the last 5min candle
     const currentPrice = data5m[data5m.length - 1].close;
     
-    // Check if current price is within 0.25% of entry price
+    // Calculate dynamic threshold based on timeframe
+    let priceThreshold = 0.005; // Base threshold 0.5%
+    
+    // Adjust threshold based on market volatility
+    const last20Candles = data5m.slice(-20);
+    const volatility = this.calculateVolatility(last20Candles);
+    if (volatility > 0.02) { // If volatility > 2%
+      priceThreshold *= 1.5;
+    }
+    
+    // Check if current price is within threshold of entry price
     const priceDiff = Math.abs(currentPrice - entry) / entry;
-    if (priceDiff > 0.0025) { // 0.25% threshold
-      console.log(`Trade setup rejected: Current price ${currentPrice} is too far from entry price ${entry} (${(priceDiff * 100).toFixed(2)}% difference)`);
+    if (priceDiff > priceThreshold) {
+      console.log(`\x1b[33m⚠️ Trade setup rejected: Current price ${currentPrice} is too far from entry price ${entry} (${(priceDiff * 100).toFixed(2)}% difference, threshold: ${(priceThreshold * 100).toFixed(2)}%)\x1b[0m`);
       return null;
     }
     
@@ -590,6 +626,52 @@ export class SMCTradingBot {
     if (riskRewardRatio < 1.5) return null;
 
     return { entry, stopLoss, targets, riskRewardRatio };
+  }
+
+  private calculateVolatility(candles: Candle[]): number {
+    const returns = [];
+    for (let i = 1; i < candles.length; i++) {
+      returns.push((candles[i].close - candles[i-1].close) / candles[i-1].close);
+    }
+    
+    // Calculate standard deviation of returns
+    const mean = returns.reduce((a, b) => a + b, 0) / returns.length;
+    const variance = returns.reduce((a, b) => a + Math.pow(b - mean, 2), 0) / returns.length;
+    return Math.sqrt(variance);
+  }
+
+  private findPatterns(candles: Candle[], timeframe: string, patternType: string): SMCPattern[] {
+    // Only allow 5m and 15m timeframes
+    if (timeframe !== '5m' && timeframe !== '15m') {
+      return [];
+    }
+
+    // Get only recent candles (max 24 hours)
+    const maxAge = timeframe === '15m' ? 96 : // 24 hours for 15m
+                  100; // ~8 hours for 5m
+    
+    const recentCandles = candles.slice(-maxAge);
+    
+    // Filter out patterns older than 24 hours
+    const oneDayAgo = Date.now() - (24 * 60 * 60 * 1000);
+    const patterns = (() => {
+      switch (patternType) {
+        case 'OrderBlock':
+          return this.findOrderBlocks(recentCandles, timeframe);
+        case 'FairValueGap':
+          return this.findFairValueGaps(recentCandles, timeframe);
+        case 'ChoCH':
+          return this.findChoCH(recentCandles, timeframe);
+        case 'BOS':
+          return this.findBOS(recentCandles, timeframe);
+        case 'LiquidityGrab':
+          return this.findLiquidityGrabs(recentCandles, timeframe);
+        default:
+          return [];
+      }
+    })();
+
+    return patterns.filter(pattern => pattern.timestamp > oneDayAgo);
   }
 
   private calculateConfidenceScore(patterns: SMCPattern[], analysis: SMCAnalysis): number {

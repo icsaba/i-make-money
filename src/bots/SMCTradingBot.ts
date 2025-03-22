@@ -1,5 +1,7 @@
 import { Interval, Spot } from '@binance/connector-typescript';
 import { Candle, TradingPlan, SMCPattern, MarketStructure, SMCAnalysis, PatternType, TradeDirection } from '../types/trading';
+import { SMCAnalysisService } from '../services/SMCAnalysisService';
+import { TradeQueueManager, QueuedTradeSetup } from '../services/TradeQueueManager';
 
 // Binance kline response type based on their API documentation
 type BinanceKline = [
@@ -25,6 +27,8 @@ interface CacheEntry {
 
 export class SMCTradingBot {
   private binanceService: Spot;
+  private analysisService: SMCAnalysisService;
+  private queueManager: TradeQueueManager;
   // Cache structure: symbol -> interval -> CacheEntry
   private klineCache: Map<string, Map<string, CacheEntry>> = new Map();
   // Cache expiry times (in milliseconds)
@@ -45,6 +49,8 @@ export class SMCTradingBot {
         process.env.BINANCE_API_SECRET!
       );
     }
+    this.analysisService = new SMCAnalysisService();
+    this.queueManager = new TradeQueueManager();
   }
 
   private transformKlineToCandle(kline: BinanceKline): Candle {
@@ -144,24 +150,35 @@ export class SMCTradingBot {
       // Get data from multiple timeframes with cache
       const data5m = await this.getKlinesWithCache(symbol, '5m', 100);
       const data15m = await this.getKlinesWithCache(symbol, '15m', 100);
-      const data1h = await this.getKlinesWithCache(symbol, '1h', 100); // For market structure context only
-      const data4h = await this.getKlinesWithCache(symbol, '4h', 50);  // For market structure context only
+      const data1h = await this.getKlinesWithCache(symbol, '1h', 100);
+      const data4h = await this.getKlinesWithCache(symbol, '4h', 50);
+
+      // Check queued setups first
+      const currentPrice = data5m[data5m.length - 1].close;
+      const validQueuedSetups = this.queueManager.checkQueuedSetups(symbol, currentPrice);
+      
+      if (validQueuedSetups.length > 0) {
+        console.log(`\x1b[32m🎯 Found ${validQueuedSetups.length} valid queued setup(s)\x1b[0m`);
+        // Process the first valid queued setup
+        const setup = validQueuedSetups[0];
+        return this.generateTradingPlan(setup.analysis, data5m, symbol);
+      }
 
       // Analyze market structure on higher timeframes for context only
-      const marketStructure = this.analyzeMarketStructure(data4h, data1h);
+      const marketStructure = this.analysisService.analyzeMarketStructure(data4h, data1h);
       
       // Find patterns ONLY on 5m and 15m timeframes
       const patterns = [
-        ...this.findPatterns(data15m, '15m', 'OrderBlock'),
-        ...this.findPatterns(data5m, '5m', 'OrderBlock'),
-        ...this.findPatterns(data15m, '15m', 'FairValueGap'),
-        ...this.findPatterns(data5m, '5m', 'FairValueGap'),
-        ...this.findPatterns(data15m, '15m', 'LiquidityGrab'),
-        ...this.findPatterns(data5m, '5m', 'LiquidityGrab'),
-        ...this.findPatterns(data15m, '15m', 'BOS'),
-        ...this.findPatterns(data5m, '5m', 'BOS'),
-        ...this.findPatterns(data15m, '15m', 'ChoCH'),
-        ...this.findPatterns(data5m, '5m', 'ChoCH')
+        ...this.analysisService.findPatterns(data15m, '15m', 'OrderBlock'),
+        ...this.analysisService.findPatterns(data5m, '5m', 'OrderBlock'),
+        ...this.analysisService.findPatterns(data15m, '15m', 'FairValueGap'),
+        ...this.analysisService.findPatterns(data5m, '5m', 'FairValueGap'),
+        ...this.analysisService.findPatterns(data15m, '15m', 'LiquidityGrab'),
+        ...this.analysisService.findPatterns(data5m, '5m', 'LiquidityGrab'),
+        ...this.analysisService.findPatterns(data15m, '15m', 'BOS'),
+        ...this.analysisService.findPatterns(data5m, '5m', 'BOS'),
+        ...this.analysisService.findPatterns(data15m, '15m', 'ChoCH'),
+        ...this.analysisService.findPatterns(data5m, '5m', 'ChoCH')
       ];
 
       // Filter out patterns older than 24 hours
@@ -177,294 +194,23 @@ export class SMCTradingBot {
       const analysis: SMCAnalysis = {
         patterns: recentPatterns,
         marketStructure,
-        liquidityLevels: this.findLiquidityLevels(data15m),
-        orderBlocks: this.findOrderBlocks(data15m, '15m'),
-        keyLevels: this.identifyKeyLevels(data4h)
+        liquidityLevels: this.analysisService.findLiquidityLevels(data15m),
+        orderBlocks: this.analysisService.findPatterns(data15m, '15m', 'OrderBlock'),
+        keyLevels: this.analysisService.identifyKeyLevels(data4h)
       };
 
-      return this.generateTradingPlan(analysis, data5m);
+      return this.generateTradingPlan(analysis, data5m, symbol);
     } catch (error) {
       console.error('\x1b[31m❌ Error in analyzeSMC:', error, '\x1b[0m');
       return null;
     }
   }
 
-  private analyzeMarketStructure(data4h: Candle[], data1h: Candle[]): MarketStructure {
-    const structure: MarketStructure = {
-      trend: 'ranging',
-      keyLevels: [],
-      swings: []
-    };
-
-    // Identify trend based on higher timeframe
-    const last4hCandles = data4h.slice(-20);
-    let highs = last4hCandles.map(c => c.high);
-    let lows = last4hCandles.map(c => c.low);
-
-    // Simple trend detection
-    const isHigherHighs = highs.slice(-3).every((h, i, arr) => i === 0 || h > arr[i - 1]);
-    const isHigherLows = lows.slice(-3).every((l, i, arr) => i === 0 || l > arr[i - 1]);
-    const isLowerHighs = highs.slice(-3).every((h, i, arr) => i === 0 || h < arr[i - 1]);
-    const isLowerLows = lows.slice(-3).every((l, i, arr) => i === 0 || l < arr[i - 1]);
-
-    if (isHigherHighs && isHigherLows) structure.trend = 'uptrend';
-    if (isLowerHighs && isLowerLows) structure.trend = 'downtrend';
-
-    // Find key levels and swings
-    const keyLevels = this.identifyKeyLevels(data4h);
-    const swings = this.identifySwings(data1h);
-
-    // Assign to structure
-    structure.keyLevels = keyLevels;
-    structure.swings = swings;
-
-    return structure;
-  }
-
-  private findOrderBlocks(candles: Candle[], timeframe: string): SMCPattern[] {
-    const patterns: SMCPattern[] = [];
-
-    for (let i = 1; i < candles.length - 1; i++) {
-      const curr = candles[i];
-      const next = candles[i + 1];
-
-      // Bullish order block
-      if (curr.close < curr.open && // bearish candle
-          next.close > next.open && // bullish candle
-          next.close > curr.high) { // strong momentum
-        patterns.push({
-          type: 'OrderBlock',
-          direction: 'bullish',
-          price: (curr.high + curr.low) / 2,
-          confidence: 0.8,
-          timeframe,
-          timestamp: curr.timestamp
-        });
-      }
-
-      // Bearish order block
-      if (curr.close > curr.open && // bullish candle
-          next.close < next.open && // bearish candle
-          next.close < curr.low) { // strong momentum
-        patterns.push({
-          type: 'OrderBlock',
-          direction: 'bearish',
-          price: (curr.high + curr.low) / 2,
-          confidence: 0.8,
-          timeframe,
-          timestamp: curr.timestamp
-        });
-      }
-    }
-
-    return patterns;
-  }
-
-  private findFairValueGaps(candles: Candle[], timeframe: string): SMCPattern[] {
-    const patterns: SMCPattern[] = [];
-
-    for (let i = 1; i < candles.length - 1; i++) {
-      // Bearish FVG
-      if (candles[i - 1].low > candles[i + 1].high) {
-        patterns.push({
-          type: 'FairValueGap',
-          direction: 'bearish',
-          price: (candles[i - 1].low + candles[i + 1].high) / 2,
-          confidence: 0.7,
-          timeframe,
-          timestamp: candles[i].timestamp
-        });
-      }
-      // Bullish FVG
-      if (candles[i - 1].high < candles[i + 1].low) {
-        patterns.push({
-          type: 'FairValueGap',
-          direction: 'bullish',
-          price: (candles[i - 1].high + candles[i + 1].low) / 2,
-          confidence: 0.7,
-          timeframe,
-          timestamp: candles[i].timestamp
-        });
-      }
-    }
-
-    return patterns;
-  }
-
-  private findChoCH(candles: Candle[], timeframe: string): SMCPattern[] {
-    const patterns: SMCPattern[] = [];
-    const swings = this.identifySwings(candles);
-
-    for (let i = 2; i < swings.length; i++) {
-      const current = swings[i];
-      const prev = swings[i - 1];
-      const twoBefore = swings[i - 2];
-
-      // Bullish CHoCH
-      if (prev.type === 'LL' && current.type === 'HH' && 
-          current.price > twoBefore.price) {
-        patterns.push({
-          type: 'ChoCH',
-          direction: 'bullish',
-          price: twoBefore.price,
-          confidence: 0.85,
-          timeframe,
-          timestamp: current.timestamp
-        });
-      }
-
-      // Bearish CHoCH
-      if (prev.type === 'HH' && current.type === 'LL' && 
-          current.price < twoBefore.price) {
-        patterns.push({
-          type: 'ChoCH',
-          direction: 'bearish',
-          price: twoBefore.price,
-          confidence: 0.85,
-          timeframe,
-          timestamp: current.timestamp
-        });
-      }
-    }
-
-    return patterns;
-  }
-
-  private findBOS(candles: Candle[], timeframe: string): SMCPattern[] {
-    const patterns: SMCPattern[] = [];
-    const swings = this.identifySwings(candles);
-
-    for (let i = 3; i < swings.length; i++) {
-      const current = swings[i];
-      const prev1 = swings[i - 1];
-      const prev2 = swings[i - 2];
-
-      // Bullish BOS
-      if (prev1.type === 'LH' && current.type === 'HH' && 
-          current.price > prev2.price) {
-        patterns.push({
-          type: 'BOS',
-          direction: 'bullish',
-          price: prev2.price,
-          confidence: 0.9,
-          timeframe,
-          timestamp: current.timestamp
-        });
-      }
-
-      // Bearish BOS
-      if (prev1.type === 'HL' && current.type === 'LL' && 
-          current.price < prev2.price) {
-        patterns.push({
-          type: 'BOS',
-          direction: 'bearish',
-          price: prev2.price,
-          confidence: 0.9,
-          timeframe,
-          timestamp: current.timestamp
-        });
-      }
-    }
-
-    return patterns;
-  }
-
-  private findLiquidityGrabs(candles: Candle[], timeframe: string): SMCPattern[] {
-    const patterns: SMCPattern[] = [];
-    const avgVolume = this.calculateAverageVolume(candles);
-    const avgRange = this.calculateAverageRange(candles);
-
-    for (let i = 1; i < candles.length - 1; i++) {
-      const curr = candles[i];
-      const prev = candles[i - 1];
-
-      // Buy-side liquidity grab
-      if (curr.low < prev.low && // Sweeps the low
-          curr.close > prev.low && // Closes above
-          curr.volume > avgVolume * 1.5) { // High volume
-        const strength = this.calculateGrabStrength(curr, avgVolume, avgRange);
-        patterns.push({
-          type: 'LiquidityGrab',
-          direction: 'bullish',
-          price: curr.low,
-          confidence: strength,
-          timeframe,
-          timestamp: curr.timestamp
-        });
-      }
-
-      // Sell-side liquidity grab
-      if (curr.high > prev.high && // Sweeps the high
-          curr.close < prev.high && // Closes below
-          curr.volume > avgVolume * 1.5) { // High volume
-        const strength = this.calculateGrabStrength(curr, avgVolume, avgRange);
-        patterns.push({
-          type: 'LiquidityGrab',
-          direction: 'bearish',
-          price: curr.high,
-          confidence: strength,
-          timeframe,
-          timestamp: curr.timestamp
-        });
-      }
-    }
-
-    return patterns;
-  }
-
-  private calculateGrabStrength(candle: Candle, avgVolume: number, avgRange: number): number {
-    const volumeFactor = Math.min(candle.volume / avgVolume, 3) / 3;
-    const rangeFactor = Math.min(Math.abs(candle.high - candle.low) / avgRange, 3) / 3;
-    const wickFactor = Math.abs(candle.close - candle.open) / Math.abs(candle.high - candle.low);
-
-    return Math.min(volumeFactor * 0.4 + rangeFactor * 0.3 + wickFactor * 0.3, 1);
-  }
-
-  private findLiquidityLevels(candles: Candle[]): { price: number; type: 'buy' | 'sell'; strength: number; }[] {
-    const levels: { price: number; type: 'buy' | 'sell'; strength: number; }[] = [];
-    const swings = this.identifySwings(candles);
-
-    // Look for clusters of swing lows/highs
-    const swingLows = swings.filter(s => s.type === 'LL' || s.type === 'HL').map(s => s.price);
-    const swingHighs = swings.filter(s => s.type === 'HH' || s.type === 'LH').map(s => s.price);
-
-    // Group nearby levels
-    const groupedLows = this.groupNearbyLevels(swingLows);
-    const groupedHighs = this.groupNearbyLevels(swingHighs);
-
-    // Convert to liquidity levels
-    groupedLows.forEach(level => {
-      levels.push({
-        price: level.price,
-        type: 'buy',
-        strength: level.count / swingLows.length
-      });
-    });
-
-    groupedHighs.forEach(level => {
-      levels.push({
-        price: level.price,
-        type: 'sell',
-        strength: level.count / swingHighs.length
-      });
-    });
-
-    return levels;
-  }
-
-  private calculateAverageVolume(candles: Candle[]): number {
-    return candles.reduce((sum, c) => sum + c.volume, 0) / candles.length;
-  }
-
-  private calculateAverageRange(candles: Candle[]): number {
-    return candles.reduce((sum, c) => sum + Math.abs(c.high - c.low), 0) / candles.length;
-  }
-
   private mapDirectionToTradeDirection(direction: 'bullish' | 'bearish'): TradeDirection {
     return direction === 'bullish' ? 'long' : 'short';
   }
 
-  private generateTradingPlan(analysis: SMCAnalysis, data5m: Candle[]): TradingPlan | null {
+  private generateTradingPlan(analysis: SMCAnalysis, data5m: Candle[], symbol: string): TradingPlan | null {
     // Find high confidence patterns
     const highConfidencePatterns = analysis.patterns.filter(p => p.confidence > 0.7);
     if (highConfidencePatterns.length === 0) {
@@ -485,7 +231,7 @@ export class SMCTradingBot {
     }
 
     // Calculate entry, stop loss and targets
-    const setup = this.calculateTradeSetup(mainPattern, analysis, data5m);
+    const setup = this.calculateTradeSetup(mainPattern, analysis, data5m, symbol);
     if (!setup) return null;
 
     // Calculate confidence score and check for A+ setup
@@ -541,22 +287,75 @@ export class SMCTradingBot {
   }
 
   private validatePatternAlignment(pattern: SMCPattern, structure: MarketStructure): boolean {
-    // Higher timeframe patterns must align with market structure
-    if (['BOS', 'ChoCH'].includes(pattern.type)) {
-      if (pattern.direction === 'bullish' && structure.trend === 'downtrend') {
-        return false;
-      }
-      if (pattern.direction === 'bearish' && structure.trend === 'uptrend') {
-        return false;
-      }
+    // All patterns must align with market structure
+    if (pattern.direction === 'bullish' && structure.trend === 'downtrend') {
+      console.log('\x1b[33m⚠️ Pattern rejected: Bullish pattern in downtrend\x1b[0m');
+      return false;
+    }
+    if (pattern.direction === 'bearish' && structure.trend === 'uptrend') {
+      console.log('\x1b[33m⚠️ Pattern rejected: Bearish pattern in uptrend\x1b[0m');
+      return false;
     }
 
-    // Liquidity grabs should occur at significant levels
-    if (pattern.type === 'LiquidityGrab') {
-      const nearbyLevel = structure.keyLevels.find(level => 
-        Math.abs(level.price - pattern.price) / pattern.price < 0.003
-      );
-      if (!nearbyLevel) return false;
+    // Validate pattern-specific criteria
+    switch (pattern.type) {
+      case 'BOS':
+      case 'ChoCH':
+        // These are trend reversal patterns, require strong confirmation
+        const recentSwings = structure.swings
+          .filter(s => s.timestamp > pattern.timestamp - (24 * 60 * 60 * 1000))
+          .slice(-3);
+        
+        if (pattern.direction === 'bullish') {
+          const hasHigherLows = recentSwings.some(s => s.type === 'HL');
+          if (!hasHigherLows) {
+            console.log('\x1b[33m⚠️ BOS/ChoCH rejected: No higher lows confirmation\x1b[0m');
+            return false;
+          }
+        } else {
+          const hasLowerHighs = recentSwings.some(s => s.type === 'LH');
+          if (!hasLowerHighs) {
+            console.log('\x1b[33m⚠️ BOS/ChoCH rejected: No lower highs confirmation\x1b[0m');
+            return false;
+          }
+        }
+        break;
+
+      case 'LiquidityGrab':
+        // Require nearby key level and strong volume
+        const nearbyLevel = structure.keyLevels.find(level => 
+          Math.abs(level.price - pattern.price) / pattern.price < 0.003 &&
+          level.strength >= 0.7 // Require strong level
+        );
+        if (!nearbyLevel) {
+          console.log('\x1b[33m⚠️ Liquidity grab rejected: No strong nearby level\x1b[0m');
+          return false;
+        }
+        break;
+
+      case 'OrderBlock':
+        // Validate order block with volume and previous price action
+        const hasVolume = pattern.confidence > 0.8; // Order blocks should have strong volume
+        const hasKeyLevel = structure.keyLevels.some(level => 
+          Math.abs(level.price - pattern.price) / pattern.price < 0.005 &&
+          level.type === (pattern.direction === 'bullish' ? 'support' : 'resistance')
+        );
+        if (!hasVolume || !hasKeyLevel) {
+          console.log('\x1b[33m⚠️ Order block rejected: Insufficient volume or key level support\x1b[0m');
+          return false;
+        }
+        break;
+
+      case 'FairValueGap':
+        // FVGs need strong momentum and clean price action
+        const hasCleanPA = structure.keyLevels.every(level => 
+          Math.abs(level.price - pattern.price) / pattern.price > 0.005
+        );
+        if (!hasCleanPA) {
+          console.log('\x1b[33m⚠️ FVG rejected: Messy price action nearby\x1b[0m');
+          return false;
+        }
+        break;
     }
 
     return true;
@@ -565,7 +364,8 @@ export class SMCTradingBot {
   private calculateTradeSetup(
     mainPattern: SMCPattern,
     analysis: SMCAnalysis,
-    data5m: Candle[]
+    data5m: Candle[],
+    symbol: string
   ): { entry: number; stopLoss: number; targets: number[]; riskRewardRatio: number; } | null {
     // Only allow 5m and 15m timeframe patterns
     if (mainPattern.timeframe !== '5m' && mainPattern.timeframe !== '15m') {
@@ -583,95 +383,96 @@ export class SMCTradingBot {
     const entry = mainPattern.price;
     const currentPrice = data5m[data5m.length - 1].close;
     
-    // Calculate dynamic threshold based on timeframe
+    // Calculate dynamic threshold based on timeframe and volatility
+    const last20Candles = data5m.slice(-20);
+    const volatility = this.analysisService.calculateVolatility(last20Candles);
     let priceThreshold = 0.005; // Base threshold 0.5%
     
-    // Adjust threshold based on market volatility
-    const last20Candles = data5m.slice(-20);
-    const volatility = this.calculateVolatility(last20Candles);
-    if (volatility > 0.02) { // If volatility > 2%
-      priceThreshold *= 1.5;
+    if (volatility > 0.015) {
+      priceThreshold = volatility * 2; // Increased multiplier
     }
     
     // Check if current price is within threshold of entry price
     const priceDiff = Math.abs(currentPrice - entry) / entry;
     if (priceDiff > priceThreshold) {
-      console.log(`\x1b[33m⚠️ Trade setup rejected: Current price ${currentPrice} is too far from entry price ${entry} (${(priceDiff * 100).toFixed(2)}% difference, threshold: ${(priceThreshold * 100).toFixed(2)}%)\x1b[0m`);
+      // Queue the setup instead of rejecting it
+      this.queueManager.queueSetup({
+        symbol,
+        pattern: mainPattern,
+        analysis,
+        entryPrice: entry,
+        queueTime: Date.now(),
+        expiryTime: Date.now() + (6 * 60 * 60 * 1000), // Increased to 6 hours expiry
+        priceThreshold: {
+          min: entry * (1 - priceThreshold),
+          max: entry * (1 + priceThreshold)
+        }
+      });
+      
+      console.log(`\x1b[33m⚠️ Trade setup queued: Current price ${currentPrice.toFixed(8)} is too far from entry price ${entry.toFixed(8)} (${(priceDiff * 100).toFixed(2)}% difference)\x1b[0m`);
       return null;
     }
     
+    // Enhanced stop loss calculation
     let stopLoss: number;
     
-    // Find nearest swing for stop loss
+    // Find multiple swing levels for stop loss consideration
     const relevantSwings = analysis.marketStructure.swings
-      .filter(swing => mainPattern.direction === 'bullish' ? 
-        swing.price < entry : swing.price > entry)
+      .filter(swing => {
+        const isValidDirection = mainPattern.direction === 'bullish' ? 
+          swing.price < entry : swing.price > entry;
+        const isRecentEnough = swing.timestamp > oneDayAgo;
+        return isValidDirection && isRecentEnough;
+      })
       .sort((a, b) => Math.abs(entry - a.price) - Math.abs(entry - b.price));
 
-    if (!relevantSwings.length) return null;
-    stopLoss = relevantSwings[0].price;
+    if (relevantSwings.length === 0) {
+      // Fallback to using a percentage-based stop loss if no valid swings found
+      const stopDistance = volatility * 2;
+      stopLoss = mainPattern.direction === 'bullish' ? 
+        entry * (1 - stopDistance) : 
+        entry * (1 + stopDistance);
+      console.log('\x1b[33m⚠️ Using fallback percentage-based stop loss\x1b[0m');
+    } else {
+      // Use nearest swing for tighter stop loss
+      stopLoss = relevantSwings[0].price;
+    }
 
-    // Find targets using key levels
+    // Validate minimum stop loss distance
+    const stopLossDistance = Math.abs(entry - stopLoss) / entry;
+    const minStopDistance = Math.max(volatility * 1.2, 0.008); // Reduced from 1.5x to 1.2x volatility and minimum from 1% to 0.8%
+    
+    if (stopLossDistance < minStopDistance) {
+      console.log(`\x1b[33m⚠️ Stop loss too close to entry (${(stopLossDistance * 100).toFixed(2)}% vs required ${(minStopDistance * 100).toFixed(2)}%)\x1b[0m`);
+      return null;
+    }
+
+    // Find targets using key levels with strength validation
     const targets = analysis.keyLevels
-      .filter(level => mainPattern.direction === 'bullish' ? 
-        level.price > entry : level.price < entry)
+      .filter(level => {
+        const isValidDirection = mainPattern.direction === 'bullish' ? 
+          level.price > entry : level.price < entry;
+        const hasGoodStrength = level.strength >= 0.5; // Reduced from 0.6 to 0.5
+        return isValidDirection && hasGoodStrength;
+      })
       .sort((a, b) => mainPattern.direction === 'bullish' ? 
         a.price - b.price : b.price - a.price)
       .slice(0, 3)
       .map(level => level.price);
 
-    if (!targets.length) return null;
+    if (targets.length < 1) { // Reduced from 2 to 1 minimum target
+      console.log('\x1b[33m⚠️ Not enough valid target levels found\x1b[0m');
+      return null;
+    }
 
     const riskRewardRatio = Math.abs(targets[0] - entry) / Math.abs(stopLoss - entry);
-    if (riskRewardRatio < 1.5) return null;
+    // Reduced minimum RR ratio
+    if (riskRewardRatio < 1.5) { // Reduced from 2 to 1.5
+      console.log(`\x1b[33m⚠️ Risk-reward ratio too low: ${riskRewardRatio.toFixed(2)} (minimum 1.5 required)\x1b[0m`);
+      return null;
+    }
 
     return { entry, stopLoss, targets, riskRewardRatio };
-  }
-
-  private calculateVolatility(candles: Candle[]): number {
-    const returns = [];
-    for (let i = 1; i < candles.length; i++) {
-      returns.push((candles[i].close - candles[i-1].close) / candles[i-1].close);
-    }
-    
-    // Calculate standard deviation of returns
-    const mean = returns.reduce((a, b) => a + b, 0) / returns.length;
-    const variance = returns.reduce((a, b) => a + Math.pow(b - mean, 2), 0) / returns.length;
-    return Math.sqrt(variance);
-  }
-
-  private findPatterns(candles: Candle[], timeframe: string, patternType: string): SMCPattern[] {
-    // Only allow 5m and 15m timeframes
-    if (timeframe !== '5m' && timeframe !== '15m') {
-      return [];
-    }
-
-    // Get only recent candles (max 24 hours)
-    const maxAge = timeframe === '15m' ? 96 : // 24 hours for 15m
-                  100; // ~8 hours for 5m
-    
-    const recentCandles = candles.slice(-maxAge);
-    
-    // Filter out patterns older than 24 hours
-    const oneDayAgo = Date.now() - (24 * 60 * 60 * 1000);
-    const patterns = (() => {
-      switch (patternType) {
-        case 'OrderBlock':
-          return this.findOrderBlocks(recentCandles, timeframe);
-        case 'FairValueGap':
-          return this.findFairValueGaps(recentCandles, timeframe);
-        case 'ChoCH':
-          return this.findChoCH(recentCandles, timeframe);
-        case 'BOS':
-          return this.findBOS(recentCandles, timeframe);
-        case 'LiquidityGrab':
-          return this.findLiquidityGrabs(recentCandles, timeframe);
-        default:
-          return [];
-      }
-    })();
-
-    return patterns.filter(pattern => pattern.timestamp > oneDayAgo);
   }
 
   private calculateConfidenceScore(patterns: SMCPattern[], analysis: SMCAnalysis): number {
@@ -720,145 +521,6 @@ export class SMCTradingBot {
       'Pattern invalidation',
       'Market structure change'
     ];
-  }
-
-  private identifySwings(candles: Candle[]): { price: number; type: 'HH' | 'LL' | 'HL' | 'LH'; timestamp: number; }[] {
-    const swings: { price: number; type: 'HH' | 'LL' | 'HL' | 'LH'; timestamp: number; }[] = [];
-    const lookback = 3; // Number of candles to look back/forward for swing confirmation
-
-    // Previous swing values for comparison
-    let lastSwingHigh = -Infinity;
-    let lastSwingLow = Infinity;
-
-    // Find swing points
-    for (let i = lookback; i < candles.length - lookback; i++) {
-      const current = candles[i];
-      const before = candles.slice(i - lookback, i);
-      const after = candles.slice(i + 1, i + lookback + 1);
-
-      // Check for swing high
-      const isSwingHigh = before.every(c => c.high <= current.high) &&
-        after.every(c => c.high <= current.high);
-
-      // Check for swing low
-      const isSwingLow = before.every(c => c.low >= current.low) &&
-        after.every(c => c.low >= current.low);
-
-      if (isSwingHigh) {
-        // Determine if it's a higher high or lower high
-        const type = current.high > lastSwingHigh ? 'HH' : 'LH';
-        swings.push({
-          price: current.high,
-          type,
-          timestamp: current.timestamp
-        });
-        lastSwingHigh = current.high;
-      }
-
-      if (isSwingLow) {
-        // Determine if it's a lower low or higher low
-        const type = current.low < lastSwingLow ? 'LL' : 'HL';
-        swings.push({
-          price: current.low,
-          type,
-          timestamp: current.timestamp
-        });
-        lastSwingLow = current.low;
-      }
-    }
-
-    return swings;
-  }
-
-  private identifyKeyLevels(candles: Candle[]): { price: number; type: 'support' | 'resistance' | 'breaker'; strength: number; }[] {
-    const levels: { price: number; type: 'support' | 'resistance' | 'breaker'; strength: number; }[] = [];
-    const swings = this.identifySwings(candles);
-    const tolerance = 0.002; // 0.2% price difference to consider levels as the same
-
-    // Group swing highs and lows
-    const swingHighs = swings.filter(s => s.type === 'HH' || s.type === 'LH').map(s => s.price);
-    const swingLows = swings.filter(s => s.type === 'LL' || s.type === 'HL').map(s => s.price);
-
-    // Find clusters of swing points
-    const highClusters = this.groupNearbyLevels(swingHighs);
-    const lowClusters = this.groupNearbyLevels(swingLows);
-
-    // Convert clusters to support/resistance levels
-    highClusters.forEach(cluster => {
-      // Check if this level was previously support (breaker)
-      const wasSupport = lowClusters.some(low =>
-        Math.abs(low.price - cluster.price) / cluster.price < tolerance
-      );
-
-      levels.push({
-        price: cluster.price,
-        type: wasSupport ? 'breaker' : 'resistance',
-        strength: Math.min(cluster.count / swingHighs.length + 0.3, 1) // Normalize and boost strength
-      });
-    });
-
-    lowClusters.forEach(cluster => {
-      // Check if this level was previously resistance (breaker)
-      const wasResistance = highClusters.some(high =>
-        Math.abs(high.price - cluster.price) / cluster.price < tolerance
-      );
-
-      levels.push({
-        price: cluster.price,
-        type: wasResistance ? 'breaker' : 'support',
-        strength: Math.min(cluster.count / swingLows.length + 0.3, 1) // Normalize and boost strength
-      });
-    });
-
-    return levels;
-  }
-
-  private groupNearbyLevels(prices: number[]): { price: number; count: number; }[] {
-    if (prices.length === 0) return [];
-
-    const tolerance = 0.002; // 0.2% price difference to consider levels as the same
-    const groups: { price: number; count: number; }[] = [];
-
-    // Sort prices in ascending order
-    const sortedPrices = [...prices].sort((a, b) => a - b);
-
-    let currentGroup = {
-      price: sortedPrices[0],
-      prices: [sortedPrices[0]],
-      count: 1
-    };
-
-    // Group nearby prices
-    for (let i = 1; i < sortedPrices.length; i++) {
-      const price = sortedPrices[i];
-      const priceDiff = Math.abs(price - currentGroup.price) / currentGroup.price;
-
-      if (priceDiff <= tolerance) {
-        // Add to current group
-        currentGroup.prices.push(price);
-        currentGroup.count++;
-      } else {
-        // Finalize current group and start new one
-        groups.push({
-          price: currentGroup.prices.reduce((a, b) => a + b) / currentGroup.prices.length, // Average price
-          count: currentGroup.count
-        });
-        currentGroup = {
-          price,
-          prices: [price],
-          count: 1
-        };
-      }
-    }
-
-    // Add the last group
-    groups.push({
-      price: currentGroup.prices.reduce((a, b) => a + b) / currentGroup.prices.length,
-      count: currentGroup.count
-    });
-
-    // Sort groups by count (strength) in descending order
-    return groups.sort((a, b) => b.count - a.count);
   }
 
   private isAPlusSetup(
@@ -924,5 +586,19 @@ export class SMCTradingBot {
     }
 
     return { isAPlus, reasons };
+  }
+
+  /**
+   * Get all currently queued setups for a symbol
+   */
+  public getQueuedSetups(symbol: string): QueuedTradeSetup[] {
+    return this.queueManager.getQueuedSetups(symbol);
+  }
+
+  /**
+   * Clear queued setups for a symbol
+   */
+  public clearQueuedSetups(symbol: string): void {
+    this.queueManager.clearSymbolQueue(symbol);
   }
 } 

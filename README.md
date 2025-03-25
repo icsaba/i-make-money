@@ -1,5 +1,11 @@
 # TradingBot Overview
 
+## About
+
+This project is an experimental project using Cursor and Claude. I am just promting and reviewing, but I let AI do whatever it wants. 
+
+## Description
+
 The `TradingBot` class in `src/bots/TradingBot.ts` is the original AI-powered trading system in this application, operating in parallel to the newly-implemented SMC (Smart Money Concept) system. It combines traditional technical analysis with AI-driven decision making.
 
 ## Core functionality

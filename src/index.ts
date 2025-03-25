@@ -1,6 +1,6 @@
 import { Command } from 'commander';
 import { TradingBot } from './bots/TradingBot';
-import { Interval, Spot } from '@binance/connector-typescript';
+import { Interval } from '@binance/connector-typescript';
 import * as dotenv from 'dotenv';
 import * as chalk from 'chalk';
 import { SMCTradingBot } from './bots/SMCTradingBot';
@@ -39,7 +39,6 @@ program
   .option('-r, --recheck', 'Recheck existing plan instead of generating new one', false)
   .option('-s, --smc', 'Use Smart Money Concept', false)
   .action(async (symbol: string, options: { interval: string; recheck: boolean; smc: boolean }) => {
-    const bot = new TradingBot();
     try {
       console.log(chalk.blue('🔄 Initializing trading bot...'));
       console.log(chalk.blue(`Symbol: ${symbol}`));
@@ -47,12 +46,18 @@ program
       console.log(chalk.blue(`Mode: ${options.recheck ? 'Rechecking existing plan' : 'Generating new plan'}`));
 
       if (options.recheck) {
+        const bot = new TradingBot();
         await bot.recheckLastPlan(symbol, options.interval);
+        await bot.cleanup();
       } else {
         if (options.smc) {
           console.log(chalk.blue('🔄 Initializing SMC trading bot...'));
-          // For one-time analysis
-          const smcBot = new SMCTradingBot();
+          // Initialize SMC bot with API credentials
+          const smcBot = new SMCTradingBot(
+            process.env.BINANCE_API_KEY!,
+            process.env.BINANCE_API_SECRET!
+          );
+          
           const tradingPlan = await smcBot.analyzeSMC(symbol);
           
           if (tradingPlan) {
@@ -62,14 +67,14 @@ program
             console.log(chalk.yellow('No valid trading setup found'));
           }
         } else {
+          const bot = new TradingBot();
           await bot.startMonitoring(symbol, options.interval as Interval);
+          await bot.cleanup();
         }
       }
     } catch (error) {
       console.error(chalk.red('Error:', error));
       process.exit(1);
-    } finally {
-      await bot.cleanup();
     }
   });
 
@@ -88,16 +93,9 @@ program
       console.log(chalk.blue(`Symbols: ${symbols.join(', ')}`));
       console.log(chalk.blue(`Scan interval: ${intervalMinutes} minutes`));
       
-      // Create Binance client
-      const binanceClient = new Spot(
-        process.env.BINANCE_API_KEY!,
-        process.env.BINANCE_API_SECRET!
-      );
-      
       // Initialize and start trading manager
       const tradingManager = new SMCTradingManager(
-        binanceClient, 
-        symbols, 
+        symbols,
         intervalMinutes
       );
       

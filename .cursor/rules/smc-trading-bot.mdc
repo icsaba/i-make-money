@@ -14,6 +14,8 @@ Files:
 - [SMCTradingManager.ts](mdc:src/managers/SMCTradingManager.ts) 
 - [BinanceService.ts](mdc:src/services/BinanceService.ts) 
 - [SMCWalletService.ts](mdc:src/services/SMCWalletService.ts) 
+- [TradeQueueManager.ts](mdc:src/services/TradeQueueManager.ts) 
+- [SMCAnalysisService.ts](mdc:src/services/SMCAnalysisService.ts)
 - [trading.ts](mdc:src/types/trading.ts) 
 - [index.ts](mdc:src/index.ts) 
 

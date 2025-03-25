@@ -1,256 +1,104 @@
-import { Interval, Spot } from '@binance/connector-typescript';
-import { Candle, TradingPlan, SMCPattern, MarketStructure, SMCAnalysis, PatternType, TradeDirection } from '../types/trading';
+import { Candle, TradingPlan, SMCPattern, MarketStructure, SMCAnalysis, PatternType, TradeDirection, TradingData, LiquidityLevel } from '../types/trading';
 import { SMCAnalysisService } from '../services/SMCAnalysisService';
 import { TradeQueueManager, QueuedTradeSetup } from '../services/TradeQueueManager';
-
-// Binance kline response type based on their API documentation
-type BinanceKline = [
-  number,  // Kline open time
-  string,  // Open price
-  string,  // High price
-  string,  // Low price
-  string,  // Close price
-  string,  // Volume
-  number,  // Kline close time
-  string,  // Quote asset volume
-  number,  // Number of trades
-  string,  // Taker buy base asset volume
-  string,  // Taker buy quote asset volume
-  string   // Unused field
-];
-
-// Cache interface to store data with timestamps
-interface CacheEntry {
-  data: Candle[];
-  timestamp: number;
-}
+import { BinanceService } from '../services/BinanceService';
 
 export class SMCTradingBot {
-  private binanceService: Spot;
+  private binanceService: BinanceService;
   private analysisService: SMCAnalysisService;
   private queueManager: TradeQueueManager;
-  // Cache structure: symbol -> interval -> CacheEntry
-  private klineCache: Map<string, Map<string, CacheEntry>> = new Map();
-  // Cache expiry times (in milliseconds)
-  private cacheExpiryTimes: { [key: string]: number } = {
-    '5m': 4 * 60 * 1000,     // 4 minutes for 5m data
-    '15m': 12 * 60 * 1000,   // 12 minutes for 15m data
-    '1h': 45 * 60 * 1000,    // 45 minutes for 1h data
-    '4h': 3 * 60 * 60 * 1000 // 3 hours for 4h data
-  };
 
-  constructor(binanceService?: Spot) {
-    if (binanceService) {
-      this.binanceService = binanceService;
-    } else {
-      // Initialize with environment variables if not provided
-      this.binanceService = new Spot(
-        process.env.BINANCE_API_KEY!,
-        process.env.BINANCE_API_SECRET!
-      );
-    }
+  constructor(apiKey: string, apiSecret: string) {
+    this.binanceService = new BinanceService(apiKey, apiSecret);
     this.analysisService = new SMCAnalysisService();
     this.queueManager = new TradeQueueManager();
   }
 
-  private transformKlineToCandle(kline: BinanceKline): Candle {
-    return {
-      timestamp: kline[0],
-      open: parseFloat(String(kline[1])),
-      high: parseFloat(String(kline[2])),
-      low: parseFloat(String(kline[3])),
-      close: parseFloat(String(kline[4])),
-      volume: parseFloat(String(kline[5]))
-    };
-  }
-
   /**
-   * Get klines data with caching
-   * @param symbol Trading pair symbol (e.g., BTCUSDT)
-   * @param interval Time interval (e.g., 5m, 15m, 1h, 4h)
-   * @param limit Number of candles to fetch
-   * @param forceRefresh Whether to force a cache refresh
-   * @returns Array of candles
+   * Get the latest price for a symbol
+   * @param symbol The trading pair symbol (e.g., BTCUSDT)
+   * @returns The latest price data
    */
-  private async getKlinesWithCache(
-    symbol: string,
-    interval: string,
-    limit: number,
-    forceRefresh: boolean = false
-  ): Promise<Candle[]> {
-    const now = Date.now();
-    const intervalKey = interval;
-    
-    // Initialize cache for symbol if it doesn't exist
-    if (!this.klineCache.has(symbol)) {
-      this.klineCache.set(symbol, new Map());
-    }
-    
-    const symbolCache = this.klineCache.get(symbol)!;
-    const cacheEntry = symbolCache.get(intervalKey);
-    const cacheExpiry = this.cacheExpiryTimes[intervalKey] || 5 * 60 * 1000; // Default to 5 minutes
-    
-    // Check if cache is valid
-    const isCacheValid = cacheEntry && 
-                         (now - cacheEntry.timestamp) < cacheExpiry && 
-                         !forceRefresh;
-    
-    if (isCacheValid) {
-      console.log(`Using cached ${intervalKey} data for ${symbol}`);
-      return cacheEntry.data;
-    }
-    
-    // Fetch new data if cache is invalid or missing
-    console.log(`Fetching fresh ${intervalKey} data for ${symbol}`);
-    try {
-      const response = await this.binanceService.uiklines(symbol, Interval[intervalKey as keyof typeof Interval], { limit });
-      const candles = (response as BinanceKline[]).map(k => this.transformKlineToCandle(k));
-      
-      // Update cache with new data
-      symbolCache.set(intervalKey, {
-        data: candles,
-        timestamp: now
-      });
-      
-      return candles;
-    } catch (error) {
-      console.error(`Error fetching ${intervalKey} data for ${symbol}:`, error);
-      
-      // If cache exists, return it even if expired
-      if (cacheEntry) {
-        console.log(`Using expired ${intervalKey} cache for ${symbol} due to fetch error`);
-        return cacheEntry.data;
-      }
-      
-      throw error;
-    }
-  }
-
-  /**
-   * Clear all cached data
-   */
-  public clearCache(): void {
-    this.klineCache.clear();
-    console.log('Kline cache cleared');
-  }
-
-  /**
-   * Clear cached data for a specific symbol
-   * @param symbol The trading pair symbol to clear cache for
-   */
-  public clearSymbolCache(symbol: string): void {
-    this.klineCache.delete(symbol);
-    console.log(`Cache cleared for ${symbol}`);
+  public async getLatestPrice(symbol: string): Promise<{ price: number }> {
+    const data = await this.binanceService.fetchMarketData(symbol, '1m');
+    const lastCandle = data.last100Candles[data.last100Candles.length - 1];
+    return { price: lastCandle.close };
   }
 
   async analyzeSMC(symbol: string): Promise<TradingPlan | null> {
     try {
-      console.log(`\x1b[36m🔍 Analyzing ${symbol} for SMC patterns...\x1b[0m`);
-      
-      // Get data from multiple timeframes with cache
-      const data5m = await this.getKlinesWithCache(symbol, '5m', 100);
-      const data15m = await this.getKlinesWithCache(symbol, '15m', 100);
-      const data1h = await this.getKlinesWithCache(symbol, '1h', 100);
-      const data4h = await this.getKlinesWithCache(symbol, '4h', 50);
-
-      // Check queued setups first
-      const currentPrice = data5m[data5m.length - 1].close;
-      const validQueuedSetups = this.queueManager.checkQueuedSetups(symbol, currentPrice);
-      
-      if (validQueuedSetups.length > 0) {
-        console.log(`\x1b[32m🎯 Found ${validQueuedSetups.length} valid queued setup(s)\x1b[0m`);
-        // Process the first valid queued setup
-        const setup = validQueuedSetups[0];
-        return this.generateTradingPlan(setup.analysis, data5m, symbol);
-      }
+      // Get data for all timeframes
+      const data4h = await this.binanceService.fetchMarketData(symbol, '4h');
+      const data1h = await this.binanceService.fetchMarketData(symbol, '1h');
+      const data15m = await this.binanceService.fetchMarketData(symbol, '15m');
+      const data5m = await this.binanceService.fetchMarketData(symbol, '5m');
 
       // Analyze market structure on higher timeframes for context only
-      const marketStructure = this.analysisService.analyzeMarketStructure(data4h, data1h);
+      const analysis = await this.analyzeMarket(data4h, data1h, data15m, data5m);
       
       // Find patterns ONLY on 5m and 15m timeframes
       const patterns = [
-        ...this.analysisService.findPatterns(data15m, '15m', 'OrderBlock'),
-        ...this.analysisService.findPatterns(data5m, '5m', 'OrderBlock'),
-        ...this.analysisService.findPatterns(data15m, '15m', 'FairValueGap'),
-        ...this.analysisService.findPatterns(data5m, '5m', 'FairValueGap'),
-        ...this.analysisService.findPatterns(data15m, '15m', 'LiquidityGrab'),
-        ...this.analysisService.findPatterns(data5m, '5m', 'LiquidityGrab'),
-        ...this.analysisService.findPatterns(data15m, '15m', 'BOS'),
-        ...this.analysisService.findPatterns(data5m, '5m', 'BOS'),
-        ...this.analysisService.findPatterns(data15m, '15m', 'ChoCH'),
-        ...this.analysisService.findPatterns(data5m, '5m', 'ChoCH')
+        ...await this.findPatternsOnTimeframe(data5m.last100Candles, '5m'),
+        ...await this.findPatternsOnTimeframe(data15m.last100Candles, '15m')
       ];
 
-      // Filter out patterns older than 24 hours
-      const oneDayAgo = Date.now() - (24 * 60 * 60 * 1000);
-      const recentPatterns = patterns.filter(pattern => pattern.timestamp > oneDayAgo);
-
-      if (recentPatterns.length === 0) {
-        console.log('\x1b[33m⚠️ No recent patterns found in lower timeframes\x1b[0m');
+      // Find high confidence patterns
+      const highConfidencePatterns = patterns.filter(p => p.confidence > 0.7);
+      if (highConfidencePatterns.length === 0) {
+        console.log('\x1b[33m⚠️ No high confidence patterns found\x1b[0m');
         return null;
       }
 
-      // Combine all analysis
-      const analysis: SMCAnalysis = {
-        patterns: recentPatterns,
-        marketStructure,
-        liquidityLevels: this.analysisService.findLiquidityLevels(data15m),
-        orderBlocks: this.analysisService.findPatterns(data15m, '15m', 'OrderBlock'),
-        keyLevels: this.analysisService.identifyKeyLevels(data4h)
-      };
+      // Sort patterns by priority and confidence
+      const sortedPatterns = this.prioritizePatterns(highConfidencePatterns);
+      if (!sortedPatterns.length) return null;
 
-      return this.generateTradingPlan(analysis, data5m, symbol);
+      // Get the highest priority pattern
+      const mainPattern = sortedPatterns[0];
+
+      // Validate pattern alignment with market structure
+      if (!this.validatePatternAlignment(mainPattern, analysis.marketStructure)) {
+        return null;
+      }
+
+      // Calculate trade setup
+      const setup = this.calculateTradeSetup(mainPattern, analysis, data5m.last100Candles, symbol);
+      if (!setup) {
+        return null;
+      }
+
+      // Calculate confidence score and check for A+ setup
+      const { isAPlus, reasons: aPlusReasons } = this.calculateConfidenceScore(sortedPatterns, analysis);
+
+      return {
+        direction: this.mapDirectionToTradeDirection(mainPattern.direction),
+        entryPrice: setup.entry,
+        stopLoss: setup.stopLoss,
+        targets: setup.targets,
+        confidenceScore: isAPlus ? 1 : 0.7,
+        timeframe: mainPattern.timeframe,
+        positionSize: 1,
+        maxLossPercentage: 1,
+        riskRewardRatio: setup.riskRewardRatio,
+        entryConditions: this.generateEntryConditions(sortedPatterns, analysis),
+        exitConditions: this.generateExitConditions(setup),
+        tradingPatterns: sortedPatterns.map(p => p.type),
+        isAPlusSetup: isAPlus,
+        aPlusReasons,
+        marketContext: {
+          trend: analysis.marketStructure.trend,
+          keyLevels: analysis.marketStructure.keyLevels.map(l => l.price),
+          liquidityLevels: analysis.liquidityLevels
+        }
+      };
     } catch (error) {
-      console.error('\x1b[31m❌ Error in analyzeSMC:', error, '\x1b[0m');
-      return null;
+      console.error('Error analyzing SMC:', error);
+      throw error;
     }
   }
 
   private mapDirectionToTradeDirection(direction: 'bullish' | 'bearish'): TradeDirection {
     return direction === 'bullish' ? 'long' : 'short';
-  }
-
-  private generateTradingPlan(analysis: SMCAnalysis, data5m: Candle[], symbol: string): TradingPlan | null {
-    // Find high confidence patterns
-    const highConfidencePatterns = analysis.patterns.filter(p => p.confidence > 0.7);
-    if (highConfidencePatterns.length === 0) {
-      console.log('\x1b[33m⚠️ No high confidence patterns found\x1b[0m');
-      return null;
-    }
-
-    // Prioritize patterns by type and timeframe
-    const patterns = this.prioritizePatterns(highConfidencePatterns);
-    if (!patterns.length) return null;
-
-    // Get the highest priority pattern
-    const mainPattern = patterns[0];
-    
-    // Validate pattern alignment with market structure
-    if (!this.validatePatternAlignment(mainPattern, analysis.marketStructure)) {
-      return null;
-    }
-
-    // Calculate entry, stop loss and targets
-    const setup = this.calculateTradeSetup(mainPattern, analysis, data5m, symbol);
-    if (!setup) return null;
-
-    // Calculate confidence score and check for A+ setup
-    const confidenceScore = this.calculateConfidenceScore(patterns, analysis);
-    
-    return {
-      direction: this.mapDirectionToTradeDirection(mainPattern.direction),
-      entryPrice: setup.entry,
-      stopLoss: setup.stopLoss,
-      targets: setup.targets,
-      confidenceScore,
-      timeframe: mainPattern.timeframe,
-      positionSize: 1,
-      maxLossPercentage: 1,
-      riskRewardRatio: setup.riskRewardRatio,
-      entryConditions: this.generateEntryConditions(patterns, analysis),
-      exitConditions: this.generateExitConditions(setup),
-      tradingPatterns: patterns.map(p => p.type)
-    };
   }
 
   private prioritizePatterns(patterns: SMCPattern[]): SMCPattern[] {
@@ -259,7 +107,9 @@ export class SMCTradingBot {
       'ChoCH': 4,
       'LiquidityGrab': 3,
       'OrderBlock': 2,
-      'FairValueGap': 1
+      'FairValueGap': 1,
+      'BreakerBlock': 2,
+      'Imbalance': 1
     };
 
     // Modified timeframe priority to only consider 15m and 5m
@@ -287,75 +137,113 @@ export class SMCTradingBot {
   }
 
   private validatePatternAlignment(pattern: SMCPattern, structure: MarketStructure): boolean {
-    // All patterns must align with market structure
-    if (pattern.direction === 'bullish' && structure.trend === 'downtrend') {
-      console.log('\x1b[33m⚠️ Pattern rejected: Bullish pattern in downtrend\x1b[0m');
-      return false;
-    }
-    if (pattern.direction === 'bearish' && structure.trend === 'uptrend') {
-      console.log('\x1b[33m⚠️ Pattern rejected: Bearish pattern in uptrend\x1b[0m');
-      return false;
-    }
-
     // Validate pattern-specific criteria
     switch (pattern.type) {
       case 'BOS':
       case 'ChoCH':
-        // These are trend reversal patterns, require strong confirmation
-        const recentSwings = structure.swings
-          .filter(s => s.timestamp > pattern.timestamp - (24 * 60 * 60 * 1000))
-          .slice(-3);
-        
-        if (pattern.direction === 'bullish') {
-          const hasHigherLows = recentSwings.some(s => s.type === 'HL');
-          if (!hasHigherLows) {
-            console.log('\x1b[33m⚠️ BOS/ChoCH rejected: No higher lows confirmation\x1b[0m');
-            return false;
-          }
-        } else {
-          const hasLowerHighs = recentSwings.some(s => s.type === 'LH');
-          if (!hasLowerHighs) {
-            console.log('\x1b[33m⚠️ BOS/ChoCH rejected: No lower highs confirmation\x1b[0m');
-            return false;
-          }
-        }
-        break;
-
+        return this.validateReversalPattern(pattern, structure);
+      
       case 'LiquidityGrab':
-        // Require nearby key level and strong volume
-        const nearbyLevel = structure.keyLevels.find(level => 
-          Math.abs(level.price - pattern.price) / pattern.price < 0.003 &&
-          level.strength >= 0.7 // Require strong level
-        );
-        if (!nearbyLevel) {
-          console.log('\x1b[33m⚠️ Liquidity grab rejected: No strong nearby level\x1b[0m');
-          return false;
-        }
-        break;
-
+        return this.validateLiquidityGrab(pattern, structure);
+      
       case 'OrderBlock':
-        // Validate order block with volume and previous price action
-        const hasVolume = pattern.confidence > 0.8; // Order blocks should have strong volume
-        const hasKeyLevel = structure.keyLevels.some(level => 
-          Math.abs(level.price - pattern.price) / pattern.price < 0.005 &&
-          level.type === (pattern.direction === 'bullish' ? 'support' : 'resistance')
-        );
-        if (!hasVolume || !hasKeyLevel) {
-          console.log('\x1b[33m⚠️ Order block rejected: Insufficient volume or key level support\x1b[0m');
-          return false;
-        }
-        break;
-
+      case 'BreakerBlock':
+        return this.validateBlock(pattern, structure);
+      
       case 'FairValueGap':
-        // FVGs need strong momentum and clean price action
-        const hasCleanPA = structure.keyLevels.every(level => 
-          Math.abs(level.price - pattern.price) / pattern.price > 0.005
-        );
-        if (!hasCleanPA) {
-          console.log('\x1b[33m⚠️ FVG rejected: Messy price action nearby\x1b[0m');
-          return false;
-        }
-        break;
+      case 'Imbalance':
+        return this.validateImbalance(pattern, structure);
+      
+      default:
+        return false;
+    }
+  }
+
+  private validateReversalPattern(pattern: SMCPattern, structure: MarketStructure): boolean {
+    if (!pattern.validation.volumeConfirmation) {
+      console.log('\x1b[33m⚠️ Reversal pattern rejected: Insufficient volume\x1b[0m');
+      return false;
+    }
+
+    if (!pattern.validation.marketStructureAlignment) {
+      console.log('\x1b[33m⚠️ Reversal pattern rejected: Not aligned with market structure\x1b[0m');
+      return false;
+    }
+
+    // Check for clean break with no immediate retrace
+    if (!pattern.priceAction.cleanBreak || pattern.priceAction.immediateRetrace) {
+      console.log('\x1b[33m⚠️ Reversal pattern rejected: No clean break or immediate retrace\x1b[0m');
+      return false;
+    }
+
+    return true;
+  }
+
+  private validateLiquidityGrab(pattern: SMCPattern, structure: MarketStructure): boolean {
+    // Volume must be significantly higher than average
+    if (pattern.volume < pattern.averageVolume * 1.5) {
+      console.log('\x1b[33m⚠️ Liquidity grab rejected: Insufficient volume spike\x1b[0m');
+      return false;
+    }
+
+    // Must have strong reversal after the grab
+    if (!pattern.priceAction.strongReversal) {
+      console.log('\x1b[33m⚠️ Liquidity grab rejected: No strong reversal\x1b[0m');
+      return false;
+    }
+
+    // Must be near a key level
+    const nearKeyLevel = structure.keyLevels.some(level => 
+      Math.abs(level.price - pattern.price) / pattern.price < 0.003 &&
+      level.strength >= 0.7
+    );
+
+    if (!nearKeyLevel) {
+      console.log('\x1b[33m⚠️ Liquidity grab rejected: No strong nearby level\x1b[0m');
+      return false;
+    }
+
+    return true;
+  }
+
+  private validateBlock(pattern: SMCPattern, structure: MarketStructure): boolean {
+    // Must have strong volume
+    if (!pattern.validation.volumeConfirmation) {
+      console.log('\x1b[33m⚠️ Block pattern rejected: Insufficient volume\x1b[0m');
+      return false;
+    }
+
+    // Must be at a key level
+    const atKeyLevel = structure.keyLevels.some(level => 
+      Math.abs(level.price - pattern.price) / pattern.price < 0.005 &&
+      level.type === (pattern.direction === 'bullish' ? 'support' : 'resistance')
+    );
+
+    if (!atKeyLevel) {
+      console.log('\x1b[33m⚠️ Block pattern rejected: Not at key level\x1b[0m');
+      return false;
+    }
+
+    return true;
+  }
+
+  private validateImbalance(pattern: SMCPattern, structure: MarketStructure): boolean {
+    // Must have clean price action
+    if (!pattern.priceAction.cleanBreak) {
+      console.log('\x1b[33m⚠️ Imbalance rejected: No clean break\x1b[0m');
+      return false;
+    }
+
+    // Must not have immediate retrace
+    if (pattern.priceAction.immediateRetrace) {
+      console.log('\x1b[33m⚠️ Imbalance rejected: Immediate retrace present\x1b[0m');
+      return false;
+    }
+
+    // Must align with market structure
+    if (!pattern.validation.marketStructureAlignment) {
+      console.log('\x1b[33m⚠️ Imbalance rejected: Not aligned with market structure\x1b[0m');
+      return false;
     }
 
     return true;
@@ -475,30 +363,78 @@ export class SMCTradingBot {
     return { entry, stopLoss, targets, riskRewardRatio };
   }
 
-  private calculateConfidenceScore(patterns: SMCPattern[], analysis: SMCAnalysis): number {
+  private calculateConfidenceScore(patterns: SMCPattern[], analysis: SMCAnalysis): { isAPlus: boolean; reasons: string[] } {
     let score = patterns[0].confidence;
-    const aPlus = this.isAPlusSetup(patterns[0], patterns, analysis);
+    const reasons: string[] = [];
+    let criteriaCount = 0;
 
-    // Boost confidence for A+ setups
-    if (aPlus.isAPlus) {
-      score = Math.min(score + 0.2, 1);
-      console.log('\x1b[32m🌟 A+ Setup Detected!\x1b[0m');
-      aPlus.reasons.forEach(reason => {
-        console.log(`\x1b[32m${reason}\x1b[0m`);
-      });
+    // 1. Higher Timeframe Alignment
+    const htfAlignment = this.checkHigherTimeframeAlignment(patterns[0], analysis);
+    if (htfAlignment.aligned) {
+      criteriaCount++;
+      reasons.push(`✅ Higher timeframe alignment: ${htfAlignment.reason}`);
     }
 
-    // Additional confidence boosts
-    if (patterns.length > 1) {
-      score += 0.1 * (patterns.length - 1);
+    // 2. Multiple Pattern Confluence
+    const confluencePatterns = patterns.filter(p => 
+      Math.abs(p.price - patterns[0].price) / patterns[0].price < 0.003 && 
+      p.direction === patterns[0].direction &&
+      p !== patterns[0]
+    );
+    if (confluencePatterns.length >= 1) {
+      criteriaCount++;
+      reasons.push(`✅ Pattern confluence: ${confluencePatterns.map(p => p.type).join(', ')}`);
     }
 
-    if (patterns[0].direction === 'bullish' && analysis.marketStructure.trend === 'uptrend' ||
-        patterns[0].direction === 'bearish' && analysis.marketStructure.trend === 'downtrend') {
-      score += 0.1;
+    // 3. Volume Confirmation
+    if (patterns[0].volume > patterns[0].averageVolume * 1.5) {
+      criteriaCount++;
+      reasons.push('✅ Strong volume confirmation');
     }
 
-    return Math.min(score, 1);
+    // 4. Clean Price Action
+    if (patterns[0].priceAction.cleanBreak && !patterns[0].priceAction.immediateRetrace) {
+      criteriaCount++;
+      reasons.push('✅ Clean price action with no immediate retrace');
+    }
+
+    // 5. Key Level Confluence
+    const nearbyKeyLevels = analysis.keyLevels.filter(level => 
+      Math.abs(level.price - patterns[0].price) / patterns[0].price < 0.003 &&
+      level.strength >= 0.7
+    );
+    if (nearbyKeyLevels.length > 0) {
+      criteriaCount++;
+      reasons.push('✅ Strong key level confluence');
+    }
+
+    // 6. Market Structure Alignment
+    if (patterns[0].validation.marketStructureAlignment) {
+      criteriaCount++;
+      reasons.push('✅ Aligned with market structure');
+    }
+
+    // 7. Liquidity Presence
+    const hasLiquidity = analysis.liquidityLevels.some(level => 
+      (patterns[0].direction === 'bullish' && level.type === 'buy' ||
+       patterns[0].direction === 'bearish' && level.type === 'sell') &&
+      Math.abs(level.price - patterns[0].price) / patterns[0].price < 0.005 &&
+      level.stopCluster
+    );
+    if (hasLiquidity) {
+      criteriaCount++;
+      reasons.push('✅ Premium liquidity level present');
+    }
+
+    // A+ setup requires at least 5 out of 7 criteria
+    const isAPlus = criteriaCount >= 5;
+    
+    if (!isAPlus) {
+      const missingCriteria = 5 - criteriaCount;
+      reasons.push(`❌ Missing ${missingCriteria} key criteria for A+ rating`);
+    }
+
+    return { isAPlus, reasons };
   }
 
   private generateEntryConditions(patterns: SMCPattern[], analysis: SMCAnalysis): string[] {
@@ -523,69 +459,42 @@ export class SMCTradingBot {
     ];
   }
 
-  private isAPlusSetup(
-    mainPattern: SMCPattern,
-    patterns: SMCPattern[],
+  private checkHigherTimeframeAlignment(
+    pattern: SMCPattern,
     analysis: SMCAnalysis
-  ): { isAPlus: boolean; reasons: string[] } {
-    const reasons: string[] = [];
-    let criteriaCount = 0;
+  ): { aligned: boolean; reason: string } {
+    // Check market structure alignment
+    const htfTrend = analysis.marketStructure.trend;
+    const patternDirection = pattern.direction;
 
-    // 1. Higher Timeframe Alignment
-    if (mainPattern.timeframe === '4h' || mainPattern.timeframe === '1h') {
-      if ((mainPattern.direction === 'bullish' && analysis.marketStructure.trend === 'uptrend') ||
-          (mainPattern.direction === 'bearish' && analysis.marketStructure.trend === 'downtrend')) {
-        criteriaCount++;
-        reasons.push('✅ Higher timeframe alignment');
+    // Check recent swings on higher timeframes
+    const recentSwings = analysis.marketStructure.swings
+      .filter(s => s.timestamp > pattern.timestamp - (24 * 60 * 60 * 1000))
+      .slice(-3);
+
+    if (patternDirection === 'bullish') {
+      const hasHigherLows = recentSwings.some(s => s.type === 'HL');
+      const trendAligned = htfTrend === 'uptrend';
+
+      if (trendAligned && hasHigherLows) {
+        return { 
+          aligned: true, 
+          reason: 'Bullish pattern aligned with uptrend and higher lows' 
+        };
+      }
+    } else {
+      const hasLowerHighs = recentSwings.some(s => s.type === 'LH');
+      const trendAligned = htfTrend === 'downtrend';
+
+      if (trendAligned && hasLowerHighs) {
+        return { 
+          aligned: true, 
+          reason: 'Bearish pattern aligned with downtrend and lower highs' 
+        };
       }
     }
 
-    // 2. Multiple Pattern Confluence
-    const confluencePatterns = patterns.filter(p => 
-      Math.abs(p.price - mainPattern.price) / mainPattern.price < 0.003 && // Within 0.3%
-      p.direction === mainPattern.direction &&
-      p !== mainPattern
-    );
-    if (confluencePatterns.length >= 1) {
-      criteriaCount++;
-      reasons.push(`✅ Pattern confluence: ${confluencePatterns.map(p => p.type).join(', ')}`);
-    }
-
-    // 3. Key Level Confluence
-    const nearbyKeyLevels = analysis.keyLevels.filter(level => 
-      Math.abs(level.price - mainPattern.price) / mainPattern.price < 0.003
-    );
-    if (nearbyKeyLevels.length > 0) {
-      criteriaCount++;
-      reasons.push('✅ Key level confluence');
-    }
-
-    // 4. Strong Pattern Types
-    if (['BOS', 'ChoCH'].includes(mainPattern.type)) {
-      criteriaCount++;
-      reasons.push('✅ High-priority pattern type');
-    }
-
-    // 5. Liquidity Presence
-    const hasLiquidity = analysis.liquidityLevels.some(level => 
-      (mainPattern.direction === 'bullish' && level.type === 'buy' ||
-       mainPattern.direction === 'bearish' && level.type === 'sell') &&
-      Math.abs(level.price - mainPattern.price) / mainPattern.price < 0.005
-    );
-    if (hasLiquidity) {
-      criteriaCount++;
-      reasons.push('✅ Liquidity presence confirmed');
-    }
-
-    // A+ setup requires at least 4 out of 5 criteria
-    const isAPlus = criteriaCount >= 4;
-    
-    if (!isAPlus) {
-      const missingCriteria = 5 - criteriaCount;
-      reasons.push(`❌ Missing ${missingCriteria} key criteria for A+ rating`);
-    }
-
-    return { isAPlus, reasons };
+    return { aligned: false, reason: 'No higher timeframe alignment' };
   }
 
   /**
@@ -600,5 +509,59 @@ export class SMCTradingBot {
    */
   public clearQueuedSetups(symbol: string): void {
     this.queueManager.clearSymbolQueue(symbol);
+  }
+
+  private async findPatternsOnTimeframe(candles: Candle[], timeframe: string): Promise<SMCPattern[]> {
+    const patterns: SMCPattern[] = [];
+    const patternTypes: PatternType[] = ['BOS', 'ChoCH', 'LiquidityGrab', 'OrderBlock', 'FairValueGap', 'BreakerBlock', 'Imbalance'];
+
+    for (const type of patternTypes) {
+      const foundPatterns = this.analysisService.findPatterns(candles, timeframe, type);
+      patterns.push(...foundPatterns);
+    }
+
+    return patterns;
+  }
+
+  private async analyzeMarket(data4h: TradingData, data1h: TradingData, data15m: TradingData, data5m: TradingData): Promise<SMCAnalysis> {
+    try {
+      // Analyze market structure using higher timeframe data only
+      const marketStructure = this.analysisService.analyzeMarketStructure(data4h.last100Candles);
+
+      // Find patterns on each timeframe
+      const patterns: SMCPattern[] = [];
+      const timeframes = [
+        { data: data4h, interval: '4h' },
+        { data: data1h, interval: '1h' },
+        { data: data15m, interval: '15m' },
+        { data: data5m, interval: '5m' }
+      ];
+
+      for (const { data, interval } of timeframes) {
+        const timeframePatterns = await this.findPatternsOnTimeframe(data.last100Candles, interval);
+        patterns.push(...timeframePatterns);
+      }
+
+      // Sort patterns by priority and confidence
+      const sortedPatterns = this.prioritizePatterns(patterns);
+
+      // Get liquidity levels with all required properties
+      const liquidityLevels = this.analysisService.findLiquidityLevels(data4h.last100Candles);
+
+      return {
+        marketStructure,
+        patterns: sortedPatterns,
+        liquidityLevels,
+        orderBlocks: sortedPatterns.filter(p => p.type === 'OrderBlock'),
+        keyLevels: marketStructure.keyLevels.map(l => ({
+          price: l.price,
+          type: l.type,
+          strength: l.strength
+        }))
+      };
+    } catch (error) {
+      console.error('Error analyzing market:', error);
+      throw error;
+    }
   }
 } 

@@ -1,6 +1,7 @@
 import { Database } from 'sqlite3';
 
 export interface Trade {
+  id?: number;
   symbol: string;
   direction: string;
   entry: number;

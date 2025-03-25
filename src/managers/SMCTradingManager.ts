@@ -11,7 +11,6 @@ import chalk = require('chalk');
  */
 export class SMCTradingManager {
   private smcBot: SMCTradingBot;
-  private binanceClient: Spot;
   private activeSymbols: string[];
   private interval: number;
   private walletService: SMCWalletService;
@@ -28,23 +27,15 @@ export class SMCTradingManager {
    * @param intervalMinutes Interval in minutes between scans (default: 5)
    */
   constructor(
-    binanceClient?: Spot,
     symbols: string[] = ['BTCUSDT', 'ETHUSDT'],
     intervalMinutes: number = 5
-  ) {
-    if (binanceClient) {
-      this.binanceClient = binanceClient;
-    } else {
-      // Initialize with environment variables if not provided
-      this.binanceClient = new Spot(
-        process.env.BINANCE_API_KEY!,
-        process.env.BINANCE_API_SECRET!
-      );
-    }
-    
+  ) {    
     this.dbService = new DatabaseService();
     this.walletService = new SMCWalletService(this.dbService.getDatabase());
-    this.smcBot = new SMCTradingBot(this.binanceClient);
+    this.smcBot = new SMCTradingBot(
+      process.env.BINANCE_API_KEY!,
+      process.env.BINANCE_API_SECRET!
+    );
     this.activeSymbols = symbols;
     this.interval = intervalMinutes * 60 * 1000;
   }
@@ -378,12 +369,10 @@ export class SMCTradingManager {
     try {
       for (const symbol of this.activeSymbols) {
         try {
-          // Get latest candle data for current price
-          const klines = await this.binanceClient.uiklines(symbol, Interval['1m'], { limit: 1 });
-          if (klines && klines.length > 0) {
-            // Use close price of most recent candle
-            const price = parseFloat(String(klines[0][4]));
-            this.currentPrices.set(symbol, price);
+          // Get latest market data using SMCTradingBot's BinanceService
+          const marketData = await this.smcBot.getLatestPrice(symbol);
+          if (marketData) {
+            this.currentPrices.set(symbol, marketData.price);
           }
         } catch (error) {
           console.error(`Error updating price for ${symbol}:`, error);

@@ -25,6 +25,13 @@ export interface TradingPlan {
   entryConditions: string[];
   exitConditions: string[];
   tradingPatterns: PatternType[];
+  isAPlusSetup: boolean;
+  aPlusReasons?: string[];
+  marketContext: {
+    trend: string;
+    keyLevels: number[];
+    liquidityLevels: LiquidityLevel[];
+  };
 }
 
 export interface TradingData {
@@ -49,6 +56,10 @@ export interface Indicators {
   ema50: number;
   ema200: number;
   adx: number;
+  volumeProfile?: {
+    valueArea: { high: number; low: number };
+    poc: number;  // Point of Control
+  };
 }
 
 export interface MarketMetrics {
@@ -58,40 +69,60 @@ export interface MarketMetrics {
   priceChange24h: number;
 }
 
-export type PatternType = 'OrderBlock' | 'FairValueGap' | 'ChoCH' | 'BOS' | 'LiquidityGrab';
+export type PatternType = 'BOS' | 'ChoCH' | 'LiquidityGrab' | 'OrderBlock' | 'FairValueGap' | 'BreakerBlock' | 'Imbalance';
 export type TradeDirection = 'long' | 'short';
 
 export interface SMCPattern {
   type: PatternType;
   direction: 'bullish' | 'bearish';
   price: number;
-  confidence: number;
-  timeframe: string;
   timestamp: number;
+  timeframe: string;
+  confidence: number;
+  volume: number;
+  averageVolume: number;
+  priceAction: {
+    cleanBreak: boolean;
+    immediateRetrace: boolean;
+    strongReversal: boolean;
+  };
+  validation: {
+    volumeConfirmation: boolean;
+    marketStructureAlignment: boolean;
+    keyLevelProximity: boolean;
+    multiTimeframeAlignment: boolean;
+  };
 }
 
 export interface MarketStructure {
-  trend: 'uptrend' | 'downtrend' | 'ranging';
+  trend: 'uptrend' | 'downtrend' | 'sideways';
+  swings: {
+    type: 'HH' | 'LL' | 'HL' | 'LH';
+    price: number;
+    timestamp: number;
+    strength: number;
+  }[];
   keyLevels: {
     price: number;
     type: 'support' | 'resistance' | 'breaker';
     strength: number;
+    timeframe: string;
   }[];
-  swings: {
-    price: number;
-    type: 'HH' | 'LL' | 'HL' | 'LH';
-    timestamp: number;
-  }[];
+}
+
+export interface LiquidityLevel {
+  price: number;
+  type: 'buy' | 'sell';
+  strength: number;
+  volume: number;
+  psychologicalLevel: boolean;
+  stopCluster: boolean;
 }
 
 export interface SMCAnalysis {
   patterns: SMCPattern[];
   marketStructure: MarketStructure;
-  liquidityLevels: {
-    price: number;
-    type: 'buy' | 'sell';
-    strength: number;
-  }[];
+  liquidityLevels: LiquidityLevel[];
   orderBlocks: SMCPattern[];
   keyLevels: {
     price: number;
